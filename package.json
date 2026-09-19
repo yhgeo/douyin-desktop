@@ -1,7 +1,7 @@
 {
   "name": "douyin-desktop",
   "version": "0.1.0",
-  "description": "抖音网页端 Electron 桌面封装，内置抖音优化用户脚本兼容层。",
+  "description": "抖音网页端 Electron 桌面应用，内置抖音优化用户脚本。",
   "main": "app/main.js",
   "author": "yhgeo",
   "license": "GPL-3.0-only",
@@ -13,10 +13,10 @@
     "lint": "node --check app/main.js && node --check app/preload.js && node --check app/userscript-runtime.js"
   },
   "build": {
-    "appId": "com.yhgeo.douyin-desktop",
-    "productName": "抖音桌面版",
+    "appId": "com.yhgeo.douyin",
+    "productName": "抖音",
     "directories": {
-      "output": "release"
+      "output": "dist"
     },
     "files": [
       "app/**/*",
@@ -30,7 +30,12 @@
       "vendor/**/*"
     ],
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/douyin-icon.png",
+      "executableName": "抖音"
     },
     "nsis": {
       "oneClick": false,
