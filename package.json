@@ -1,0 +1,46 @@
+{
+  "name": "douyin-desktop",
+  "version": "0.1.0",
+  "description": "抖音网页端 Electron 桌面封装，内置抖音优化用户脚本兼容层。",
+  "main": "app/main.js",
+  "author": "yhgeo",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging",
+    "package": "electron-builder --dir",
+    "dist": "electron-builder --win nsis portable",
+    "lint": "node --check app/main.js && node --check app/preload.js && node --check app/userscript-runtime.js"
+  },
+  "build": {
+    "appId": "com.yhgeo.douyin-desktop",
+    "productName": "抖音桌面版",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "app/**/*",
+      "assets/**/*",
+      "vendor/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "assets/**/*",
+      "vendor/**/*"
+    ],
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "devDependencies": {
+    "electron": "44.4.3",
+    "electron-builder": "26.15.3"
+  }
+}
