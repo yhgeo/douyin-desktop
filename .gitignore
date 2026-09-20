@@ -1,6 +1,6 @@
 node_modules/
 release/
-dist/
+dist*/
 *.log
 .DS_Store
 .scriptcat-page.html
