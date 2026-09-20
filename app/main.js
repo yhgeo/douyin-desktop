@@ -293,6 +293,7 @@ function buildMenu() {
 
   const toolSubmenu = [
     { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },
+    { label: '关闭卡住的弹窗', click: () => requestStuckDialogRecovery() },
     { type: 'separator' },
     {
       label: '清除抖音网页数据',
@@ -408,6 +409,23 @@ async function createWindow() {
  * full chain), so when the renderer really does block, offer a reload instead of
  * leaving a dead window behind.
  */
+/**
+ * Ask the page to dismiss a stuck Douyin dialog.
+ *
+ * The prompt's own close path waits on an async call that can never settle, which
+ * leaves every button disabled behind a full-screen mask. The page side reuses
+ * Douyin's synchronous cleanup (the one its countdown uses); see
+ * app/stuck-dialog-recovery.js.
+ */
+let stuckDialogRecoveryPending = null;
+
+function requestStuckDialogRecovery() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (stuckDialogRecoveryPending) return;
+  stuckDialogRecoveryPending = setTimeout(() => { stuckDialogRecoveryPending = null; }, 4000);
+  mainWindow.webContents.send('recover-stuck-dialog');
+}
+
 function attachFrozenPageRecovery(contents) {
   return attachResponsivenessHandlers(contents, {
     confirmReload: async () => {
@@ -462,6 +480,25 @@ app.whenReady().then(async () => {
     if (!userscriptLoadState.ok) console.error(`[抖音] 内置脚本加载失败：${state?.message}`);
     scheduleMenuRebuild();
   });
+  // A stuck dialog that the page recovered on its own.
+  ipcMain.on('stuck-dialog-recovered', (_event, info) => {
+    console.warn(`[抖音] 页面自行恢复了卡住的弹窗：${JSON.stringify(info)}`);
+  });
+  ipcMain.on('stuck-dialog-recovery-result', (_event, result) => {
+    clearTimeout(stuckDialogRecoveryPending);
+    stuckDialogRecoveryPending = null;
+    if (result?.recovered) {
+      console.info(`[抖音] 已关闭卡住的弹窗（${result.via}）`);
+      return;
+    }
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '关闭卡住的弹窗',
+      message: '当前没有检测到卡住的弹窗。',
+      buttons: ['好'],
+    }).catch(() => {});
+  });
+
   ipcMain.on('userscript-storage-error', (_event, info) => {
     console.error(`[抖音] 脚本配置${info?.phase === 'read' ? '读取' : '保存'}失败：${info?.message}`);
   });

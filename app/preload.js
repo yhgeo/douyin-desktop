@@ -2,6 +2,7 @@ const { ipcRenderer } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { whenDocumentElementAvailable } = require('./dom-ready');
+const { installStuckDialogWatch, recoverStuckDialog } = require('./stuck-dialog-recovery');
 const { LEGACY_VALUES_KEY } = require('./gm-store');
 
 const isDouyin = /(^|\.)douyin\.com$|(^|\.)iesdouyin\.com$/i.test(location.hostname);
@@ -143,6 +144,24 @@ ipcRenderer.on('invoke-gm-menu-command', (_event, id) => {
   if (!command || typeof command.callback !== 'function') return;
   try { command.callback(); } catch (error) { console.error(`[抖音] 执行脚本菜单“${command.name}”失败`, error); }
 });
+
+// Douyin's "是否保存登录信息？" prompt can hang in its own close path, leaving a
+// full-screen mask over a page whose buttons are all disabled - unrecoverable
+// without a reload. Watch for that and recover it; see the module for the chain.
+if (isTopFrame) {
+  whenDocumentElementAvailable(() => {
+    installStuckDialogWatch({
+      onRecovered: (info) => {
+        console.warn(`[抖音] 已关闭卡住的弹窗（${info.via}，卡住 ${Math.round(info.stuckMs / 1000)} 秒）`);
+        ipcRenderer.send('stuck-dialog-recovered', info);
+      },
+    });
+  });
+
+  ipcRenderer.on('recover-stuck-dialog', () => {
+    ipcRenderer.send('stuck-dialog-recovery-result', recoverStuckDialog());
+  });
+}
 
 if (scriptEnabled) {
   if (isTopFrame) ipcRenderer.send('gm-menu-reset');

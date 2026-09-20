@@ -89,7 +89,7 @@ function tempDir(name) {
 // ---------------------------------------------------------------------------
 ensureCerts();
 
-process.stdout.write('\n[1/4] popup + custom scheme blocking\n');
+process.stdout.write('\n[1/5] popup + custom scheme blocking\n');
 // ---------------------------------------------------------------------------
 {
   const { read } = runElectron('popup-guard-main.js');
@@ -166,7 +166,7 @@ process.stdout.write('\n[1/4] popup + custom scheme blocking\n');
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[2/4] userscript injection timing (root cause of the old failure)\n');
+process.stdout.write('\n[2/5] userscript injection timing (root cause of the old failure)\n');
 // ---------------------------------------------------------------------------
 {
   const { read } = runElectron('injection-timing-main.js');
@@ -185,7 +185,7 @@ process.stdout.write('\n[2/4] userscript injection timing (root cause of the old
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[3/4] userscript injection + settings persistence\n');
+process.stdout.write('\n[3/5] userscript injection + settings persistence\n');
 // ---------------------------------------------------------------------------
 {
   const userData = tempDir('persist');
@@ -229,7 +229,7 @@ process.stdout.write('\n[3/4] userscript injection + settings persistence\n');
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[4/4] clearing web data vs script data are independent\n');
+process.stdout.write('\n[4/5] clearing web data vs script data are independent\n');
 // ---------------------------------------------------------------------------
 {
   const userData = tempDir('clear');
@@ -264,6 +264,34 @@ process.stdout.write('\n[4/4] clearing web data vs script data are independent\n
     !('GM_Panel' in (report?.storeAfterClearScriptData || {})),
     JSON.stringify(report?.storeAfterClearScriptData),
   );
+
+  fs.rmSync(userData, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+process.stdout.write('\n[5/5] stuck login-save dialog recovery\n');
+// ---------------------------------------------------------------------------
+{
+  const userData = tempDir('stuck-dialog');
+  const { read } = runElectron('stuck-dialog-main.js', [`--e2e-user-data=${userData}`]);
+  const report = JSON.parse(read('STUCK_REPORT=') || 'null');
+
+  check('page loaded from the local stub, not the real site', report?.isLocalStub === true);
+  check('the stuck shape was reproduced (mask up, every button unusable)', report?.stuckInjected?.present === true
+    && report?.stuckInjected?.maskPresent === true
+    && report?.stuckInjected?.allButtonsUnusable === true, JSON.stringify(report?.stuckInjected));
+
+  check('the stuck dialog was recovered', report?.stuckRecovery?.recovered === true, JSON.stringify(report?.stuckRecovery));
+  check('the recovery reported how it did it', ['defaultHandler', 'removed'].includes(report?.stuckRecovery?.via),
+    report?.stuckRecovery?.via);
+  check('the dialog is gone afterwards', report?.afterRecovery?.dialog === false);
+  check('the mask is gone too, so the page is clickable again', report?.afterRecovery?.mask === false);
+  check('asking again reports nothing to do', report?.secondRecovery?.recovered === false,
+    JSON.stringify(report?.secondRecovery));
+
+  check('a healthy dialog is still closable on request', report?.healthyRecovery?.recovered === true,
+    JSON.stringify(report?.healthyRecovery));
+  check('and it is removed', report?.afterHealthy === false);
 
   fs.rmSync(userData, { recursive: true, force: true });
 }

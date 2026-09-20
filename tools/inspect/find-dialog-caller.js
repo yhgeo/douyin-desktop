@@ -20,7 +20,7 @@ const EXPRESSION = `(async () => {
     ...performance.getEntriesByType('resource').map((e) => e.name).filter((n) => /\\.js(\\?|$)/.test(n)),
   ])];
 
-  const needles = ['confirmHandler:', 'cancelHandler:'];
+  const needles = ['save_guide'];
   const hits = [];
 
   for (const url of urls) {
@@ -37,12 +37,12 @@ const EXPRESSION = `(async () => {
       while (count < 2) {
         const at = text.indexOf(needle, from);
         if (at === -1) break;
-        hits.push({ url, needle, context: text.slice(Math.max(0, at - 300), at + 700) });
+        hits.push({ url, needle, context: text.slice(Math.max(0, at - 1500), at + 900) });
         from = at + needle.length;
         count += 1;
       }
     }
-    if (hits.length >= 6) break;
+    if (hits.length >= 4) break;
   }
 
   return { scriptCount: urls.length, hitCount: hits.length, hits };
