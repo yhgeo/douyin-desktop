@@ -238,6 +238,39 @@ token，其余保持 Chromium 原样：
 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36
 ```
 
+### 启动即退出（GPU 进程无法启动）
+
+现象：双击后窗口一闪而过。日志里是连续约 9 条然后一条 FATAL：
+
+```
+ERROR:content\browser\gpu\gpu_process_host.cc:1035] GPU process exited unexpectedly: exit_code=1
+FATAL:content\browser\gpu\gpu_data_manager_impl_private.cc:417] GPU process isn't usable. Goodbye.
+```
+
+这是 Chromium 自己的行为：**GPU 子进程启动不了**时，短时间重试失败次数超限就直接中止主进程。
+2026-09-20 22:13 在开发环境的工具沙箱里实测到，逐个试参数得到：
+
+| 启动参数 | 结果 |
+| --- | --- |
+| 默认 | ❌ 启动约 1 秒后中止 |
+| `--in-process-gpu` | ✅ 正常 |
+| `--disable-gpu-sandbox` | ✅ 正常 |
+| `--no-sandbox` | ✅ 正常 |
+| `--disable-gpu-process-crash-limit` | ⚠️ 不再中止，但 26 秒内重试了 436 次（CPU 空转 + 日志被灌满），不可用 |
+
+指向的是 **GPU 进程的沙箱初始化**，而不是显卡或渲染栈。
+
+**这和应用代码无关**：同一时刻，25 分钟前还正常的打包版 0.1.6、以及开发目录（同一份源码）
+都会以同样方式退出；而本项目自己的运行日志里 GPU 事件为 **0**，说明正常的启动路径不受影响。
+
+临时绕过：
+
+```bash
+npm start -- --in-process-gpu
+```
+
+一般重启机器即可恢复。
+
 ### 脚本配置存放位置
 
 脚本的 GM 值由**主进程**持有（`app/gm-store.js`，落盘到 `userData/userscript-config.json`），
