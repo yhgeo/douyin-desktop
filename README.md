@@ -114,6 +114,18 @@ npm run dist
 - `抖音 Setup 0.1.0.exe`：Windows 安装包
 - `抖音 0.1.0.exe`：便携式 EXE
 
+网络受限时（国内直连 GitHub 慢或不通）先设置镜像再打包：
+
+```powershell
+$env:ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/"
+npm run dist
+```
+
+> 注意：`ELECTRON_BUILDER_BINARIES_MIRROR` 会改变 NSIS 工具链的缓存 key，触发重新下载。
+> 如果本机已经缓存过原始来源的 NSIS 工具链，就不要再设这个变量，否则容易在
+> `rename '*.tmp' -> '*'` 上撞到 Windows 的 EPERM（杀毒软件/瞬时占用）。
+> 真遇到 EPERM 时，把 `dist/` 移开再重跑即可。
+
 ## 脚本来源与许可
 
 内置脚本来自 `WhiteSevs/TamperMonkeyScript`，脚本标注为 **GPL-3.0-only**。对应脚本源码保存在：
