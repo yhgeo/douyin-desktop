@@ -455,6 +455,15 @@ async function createWindow() {
   attachBlankPageRecovery(mainWindow.webContents, {
     session: session.defaultSession,
     log: (level, message, data) => log[level]?.(message, data),
+    // A black window with no feedback reads as a frozen app, and a user who thinks it
+    // is frozen closes it - which is exactly what happened on 2026-09-20 21:45, three
+    // seconds into a repair that was working. Say what is going on in the title bar.
+    onStatus: (status) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.setTitle(status.phase === 'repairing'
+        ? `${APP_NAME} — 页面加载异常，正在自动修复（第 ${status.round} 次）`
+        : APP_NAME);
+    },
     onRecovered: (info) => {
       if (info.failed) {
         log.error('无法清除站点数据', { round: info.round, error: info.failed });

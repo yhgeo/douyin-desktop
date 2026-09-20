@@ -6,12 +6,15 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
 const {
   BACKOFF_MS,
   LADDER,
+  SETTLE_MS,
   STORAGES,
   applyLadderStep,
+  attachBlankPageRecovery,
   backoffForRound,
   clearAntiCrawlCookies,
   isBlankDocument,
@@ -148,4 +151,87 @@ test('retries are immediate first, then spaced out', () => {
   );
   // The cap holds however long the server stays unreachable.
   assert.equal(backoffForRound(99), BACKOFF_MS[BACKOFF_MS.length - 1]);
+});
+
+// ---------------------------------------------------------------------------
+// The watcher itself, driven by a fake page.
+//
+// The e2e test proves this against a real Electron window; this pins the timing and
+// the status reporting, which is what decides whether a user waits for the repair or
+// closes the window believing the app has hung.
+// ---------------------------------------------------------------------------
+
+const BLANK_STATE = { href: 'https://www.douyin.com/', readyState: 'complete', bodyChildren: 0, scripts: 0, decoded: 0 };
+const GOOD_STATE = { href: 'https://www.douyin.com/jingxuan', readyState: 'complete', bodyChildren: 160, scripts: 190, decoded: 900000 };
+
+class FakePage extends EventEmitter {
+  constructor(states) {
+    super();
+    this.states = states;
+    this.index = 0;
+    this.reloads = 0;
+  }
+
+  isDestroyed() { return false; }
+
+  getURL() { return 'https://www.douyin.com/'; }
+
+  async executeJavaScript() {
+    return this.states[Math.min(this.index, this.states.length - 1)];
+  }
+
+  reloadIgnoringCache() {
+    this.reloads += 1;
+    this.index += 1;
+  }
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+test('the settle delay is short enough that a user waits for the repair', () => {
+  // Measured against a real user on 2026-09-20: with a 2500 ms settle the log shows
+  // round 1 then round 2 two and a half seconds apart, and then nothing - the window
+  // was closed while the repair was still climbing. Keep this small.
+  assert.ok(SETTLE_MS <= 1000, `settle delay is ${SETTLE_MS} ms, which is long enough to look hung`);
+});
+
+test('the watcher escalates rung by rung and reports its progress', async () => {
+  const session = fakeSession({ cookies: [{ name: '__ac_signature' }, { name: 'sessionid' }] });
+  const page = new FakePage([BLANK_STATE, BLANK_STATE, BLANK_STATE, GOOD_STATE]);
+  const statuses = [];
+  const recoveries = [];
+
+  attachBlankPageRecovery(page, {
+    session,
+    settleMs: 0,
+    log: () => {},
+    onStatus: (status) => statuses.push(status),
+    onRecovered: (info) => recoveries.push(info),
+  });
+
+  for (let round = 1; round <= 3; round += 1) {
+    page.emit('did-finish-load');
+    await settle();
+  }
+
+  assert.equal(page.reloads, 3, 'one reload per rung');
+  assert.deepEqual(recoveries.map((item) => item.round), [1, 2, 3]);
+  assert.deepEqual(recoveries[0].actions, ['storage']);
+  assert.deepEqual(recoveries[1].actions, ['storage', 'anti-crawl-cookies']);
+  assert.deepEqual(recoveries[2].actions, ['storage', 'anti-crawl-cookies', 'http-cache']);
+  assert.deepEqual(recoveries[1].removedCookies, ['__ac_signature']);
+  assert.equal(session.state.removed.includes('sessionid'), false);
+
+  // The shell needs these to say "正在自动修复（第 N 次）" instead of showing a dead
+  // black rectangle, which is what makes a user wait instead of closing the window.
+  assert.deepEqual(
+    statuses.filter((item) => item.phase === 'repairing').map((item) => item.round),
+    [1, 2, 3],
+  );
+
+  // A real page ends the episode and clears the notice.
+  page.emit('did-finish-load');
+  await settle();
+  assert.equal(statuses.at(-1).phase, 'healthy');
+  assert.equal(page.reloads, 3, 'a healthy page must not be reloaded again');
 });

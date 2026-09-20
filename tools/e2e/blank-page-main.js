@@ -38,7 +38,7 @@ const GOOD_PAGE = `<!doctype html><html><head><title>douyin</title>
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 app.whenReady().then(async () => {
-  const report = { documentRequests: 0, recoveries: [], blankShape: null, probeKeySet: false };
+  const report = { documentRequests: 0, recoveries: [], statuses: [], blankShape: null, probeKeySet: false };
 
   // Refuse the document until storage has been cleared *twice*, then serve the real
   // page. Refusing twice is deliberate: it forces the watcher onto the next rung of
@@ -96,6 +96,7 @@ app.whenReady().then(async () => {
   attachBlankPageRecovery(win.webContents, {
     session: session.defaultSession,
     settleMs: 400,
+    onStatus: (status) => report.statuses.push(status),
     onRecovered: (info) => report.recoveries.push({
       round: info.round,
       actions: info.actions || [],

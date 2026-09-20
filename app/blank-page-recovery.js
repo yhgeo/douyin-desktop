@@ -65,8 +65,20 @@ const STORAGES = ['serviceworkers', 'cachestorage', 'localstorage', 'indexdb'];
  */
 const ANTI_CRAWL_COOKIE_PREFIX = '__ac_';
 
-/** Let the anti-crawl challenge finish before judging the page. */
-const SETTLE_MS = 2500;
+/**
+ * How long after a completed load the page is judged.
+ *
+ * The check only fires on a document that has *finished* loading and has no body
+ * content and no scripts, so this does not need to cover a slow render - only the
+ * parser settling. It used to be 2500 ms, which made one rung of the ladder take
+ * 2.5 s and the whole ladder about eight.
+ *
+ * That was measured against a real user on 2026-09-20 21:45: the log shows round 1 at
+ * 21:45:37.852 and round 2 at 21:45:40.366, and then nothing - they closed the black
+ * window three seconds in, while a repair that was working its way up the ladder.
+ * Speed is what makes this feature usable; a recovery nobody waits for is no recovery.
+ */
+const SETTLE_MS = 700;
 
 /** Enough scripts to be sure a real Douyin page rendered, not the challenge page. */
 const REAL_PAGE_SCRIPTS = 5;
@@ -174,6 +186,9 @@ function backoffForRound(round) {
  * @param {number} [options.settleMs]
  * @param {number} [options.maxRounds] give up after this many consecutive blanks (default: never)
  * @param {(level: string, message: string, data?: object) => void} [options.log]
+ * @param {(status: { phase: string, round?: number, waitMs?: number, actions?: string[], removedCookies?: string[] }) => void} [options.onStatus]
+ *   Called whenever the repair state changes, so the shell can show it. A black window
+ *   with no feedback reads as a frozen app, and a user who thinks it is frozen closes it.
  * @param {(info: object) => void} [options.onRecovered]
  * @returns {() => void} stop watching
  */
@@ -184,6 +199,7 @@ function attachBlankPageRecovery(contents, options = {}) {
     settleMs = SETTLE_MS,
     maxRounds = Infinity,
     log = () => {},
+    onStatus = () => {},
     onRecovered = () => {},
   } = options;
 
@@ -225,6 +241,7 @@ function attachBlankPageRecovery(contents, options = {}) {
     if (!isBlankDocument(state)) {
       if (rounds > 0) {
         log('info', '页面已恢复', { rounds, scripts: state.scripts, decoded: state.decoded, href: state.href });
+        onStatus({ phase: 'healthy', rounds });
       }
       if (state.scripts >= REAL_PAGE_SCRIPTS) rounds = 0;
       return;
@@ -238,6 +255,7 @@ function attachBlankPageRecovery(contents, options = {}) {
     rounds += 1;
     const wait = backoffForRound(rounds);
     log('warn', '页面加载为空，准备修复', { round: rounds, waitMs: wait, state });
+    onStatus({ phase: 'repairing', round: rounds, waitMs: wait });
 
     if (wait > 0) {
       stop();

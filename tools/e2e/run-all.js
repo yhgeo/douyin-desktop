@@ -370,6 +370,17 @@ process.stdout.write('\n[6/6] blank page recovery (Douyin refuses to serve the d
   check('no repair reported a failure',
     (report?.recoveries || []).every((item) => !item.failed), JSON.stringify(report?.recoveries));
 
+  // A repair the user cannot see is a repair the user interrupts: on 2026-09-20 a
+  // black window was closed three seconds in, while the ladder was still climbing.
+  // These statuses are what the shell turns into the window title.
+  check('the repair announced itself while it was working',
+    (report?.statuses || []).filter((item) => item.phase === 'repairing').map((item) => item.round)
+      .join(',') === '1,2',
+    JSON.stringify(report?.statuses));
+  check('and it announced the recovery when the page came back',
+    (report?.statuses || []).at(-1)?.phase === 'healthy',
+    JSON.stringify(report?.statuses?.at(-1)));
+
   // The reason only `__ac_*` is dropped: the user stays logged in.
   check('the login cookie survived the escalating repair',
     (report?.cookiesAfter || []).includes('sessionid'), JSON.stringify(report?.cookiesAfter));
