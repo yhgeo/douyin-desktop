@@ -40,12 +40,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 app.whenReady().then(async () => {
   const report = { documentRequests: 0, recoveries: [], blankShape: null, probeKeySet: false };
 
-  // Refuse the document until the storage has been cleared, then serve the real page.
-  let storageWasCleared = false;
+  // Refuse the document until storage has been cleared *twice*, then serve the real
+  // page. Refusing twice is deliberate: it forces the watcher onto the next rung of
+  // its escalation ladder, which is exactly what used to be missing - the first
+  // version gave up after two repairs and left the window black for good.
+  let clearCount = 0;
   const server = await harness.serveDouyinOrigin(PORT, (_request, response) => {
     report.documentRequests += 1;
     response.setHeader('content-type', 'text/html; charset=utf-8');
-    response.end(storageWasCleared ? GOOD_PAGE : EMPTY_DOCUMENT);
+    response.end(clearCount >= 2 ? GOOD_PAGE : EMPTY_DOCUMENT);
   });
 
   const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true } });
@@ -55,10 +58,23 @@ app.whenReady().then(async () => {
   const originalClear = session.defaultSession.clearStorageData.bind(session.defaultSession);
   session.defaultSession.clearStorageData = async (options) => {
     const result = await originalClear(options);
-    storageWasCleared = true;
+    clearCount += 1;
+    report.clearCount = clearCount;
     report.clearOptions = options;
     return result;
   };
+
+  // Seed one login cookie and one anti-crawl cookie. The escalation must drop the
+  // anti-crawl one and leave the login alone - losing the login would be a far worse
+  // outcome than the black page this is fixing.
+  for (const [name, value] of [['sessionid', 'e2e-login'], ['__ac_signature', 'e2e-ac']]) {
+    await session.defaultSession.cookies.set({
+      url: 'http://www.douyin.com/',
+      name,
+      value,
+      expirationDate: Math.floor(Date.now() / 1000) + 3600,
+    });
+  }
 
   // Record the shape of the refused document, and leave a storage breadcrumb that
   // must not survive the recovery.
@@ -80,7 +96,12 @@ app.whenReady().then(async () => {
   attachBlankPageRecovery(win.webContents, {
     session: session.defaultSession,
     settleMs: 400,
-    onRecovered: (info) => report.recoveries.push({ attempt: info.attempt, failed: info.failed || null }),
+    onRecovered: (info) => report.recoveries.push({
+      round: info.round,
+      actions: info.actions || [],
+      removedCookies: info.removedCookies || [],
+      failed: info.failed || null,
+    }),
   });
 
   await win.loadURL('http://www.douyin.com/').catch((error) => { report.loadError = String(error.message); });
@@ -101,6 +122,10 @@ app.whenReady().then(async () => {
     isLocalStub: Boolean(window['${harness.STUB_MARKER}']),
     probeKeyAfter: localStorage.getItem('e2e-probe'),
   })`, true).catch((error) => ({ error: String(error.message) }));
+
+  report.cookiesAfter = (await session.defaultSession.cookies.get({ url: 'http://www.douyin.com/' }))
+    .map((cookie) => cookie.name)
+    .sort();
 
   // A healthy page must not be repaired again.
   const requestsAfterRepair = report.documentRequests;

@@ -352,10 +352,29 @@ process.stdout.write('\n[6/6] blank page recovery (Douyin refuses to serve the d
   check('the refused document was a completed load, not a half-parsed one',
     report?.blankShape?.readyState === 'complete', report?.blankShape?.readyState);
 
-  check('the blank page was detected and repaired', (report?.recoveries || []).length === 1,
-    JSON.stringify(report?.recoveries));
-  check('the repair is reported as the first attempt', report?.recoveries?.[0]?.attempt === 1);
-  check('the repair did not fail', !report?.recoveries?.[0]?.failed, report?.recoveries?.[0]?.failed);
+  // Two repairs, not one: the stub keeps refusing until storage has been cleared
+  // twice, so a watcher that gave up early would never reach the real page. That
+  // early give-up is what left the window black until the app was restarted.
+  check('the watcher repaired twice instead of giving up',
+    (report?.recoveries || []).length === 2, JSON.stringify(report?.recoveries));
+  check('the first repair is the gentlest rung', report?.recoveries?.[0]?.round === 1
+    && JSON.stringify(report?.recoveries?.[0]?.actions) === '["storage"]',
+    JSON.stringify(report?.recoveries?.[0]));
+  check('the second repair escalates to dropping the anti-crawl cookies',
+    report?.recoveries?.[1]?.round === 2
+    && (report?.recoveries?.[1]?.actions || []).includes('anti-crawl-cookies'),
+    JSON.stringify(report?.recoveries?.[1]));
+  check('the escalating repair dropped the stale anti-crawl cookie',
+    (report?.recoveries?.[1]?.removedCookies || []).includes('__ac_signature'),
+    JSON.stringify(report?.recoveries?.[1]?.removedCookies));
+  check('no repair reported a failure',
+    (report?.recoveries || []).every((item) => !item.failed), JSON.stringify(report?.recoveries));
+
+  // The reason only `__ac_*` is dropped: the user stays logged in.
+  check('the login cookie survived the escalating repair',
+    (report?.cookiesAfter || []).includes('sessionid'), JSON.stringify(report?.cookiesAfter));
+  check('the stale anti-crawl cookie is gone',
+    !(report?.cookiesAfter || []).includes('__ac_signature'), JSON.stringify(report?.cookiesAfter));
 
   check('storage for the douyin origin was cleared',
     report?.clearOptions?.origin === 'https://www.douyin.com', JSON.stringify(report?.clearOptions));

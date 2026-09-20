@@ -145,16 +145,65 @@ serviceworkers, cachestorage, localstorage, indexdb
 55 个 cookie 注入全新 profile，页面照常加载）。实测在你出问题的 profile 上，页面立刻恢复、
 **登录态保留**，连刷两次都正常。
 
-两种触发方式：
+#### 只修一次不够：现在是阶梯式升级，永不放弃（0.1.5）
 
-| 方式 | 说明 |
+上面那版**修两次就永久放弃**，而且只在「真实页面加载成功」时才重置次数。所以两次都没修好，
+窗口就会一直黑到重启为止 —— 而且**全程没有任何日志**。这才是「过几个小时又黑屏、只能手动修」
+的真正原因：不是没修，是修完就停了。
+
+现在的行为是阶梯式升级：
+
+| 轮次 | 动作 |
 | --- | --- |
-| 自动 | 页面 `did-finish-load` 后 2.5 秒复查；若「文档已加载完 + body 无子元素 + 无脚本」则清理并重载（每个窗口最多 2 次） |
-| 工具 → 修复无法加载的页面 | 手动，立即执行；**只在检测到空文档时才清数据**，否则只是强制重载 |
+| 1 | 清站点非 cookie 存储 |
+| 2 | 再加：删掉 `__ac_signature` / `__ac_nonce` / `__ac_referer`（**只删反爬 cookie，登录 cookie 一个不碰**） |
+| 3 | 再加：清 HTTP 缓存 |
+| 4+ | 重复第 3 轮，间隔 10s → 30s → 60s → 120s 递增 |
 
-> 为什么用「body 无子元素 **且** 无脚本」判定：抖音正常页面有上百个，反爬挑战页也自带一段
-> inline 脚本 —— 所以这个组合不可能是「页面正在加载中」。同时要求 `readyState === 'complete'`，
-> 避免在半解析状态下误清数据。
+真实 app + 真实抖音上实测（用 CDP 持续拒绝文档 45 秒逼它走完整阶梯）：
+
+```
+round:1  actions:["storage"]
+round:2  actions:["storage","anti-crawl-cookies"]  removedCookies:["__ac_nonce","__ac_signature"]
+round:3  actions:["storage","anti-crawl-cookies","http-cache"]
+round:4  waitMs:10000
+round:5  waitMs:30000        <- 仍在继续
+```
+
+放开拦截后页面自己回来了（112 个 body 子元素、170 个脚本、994 KB），全程无需人工干预。
+
+判定条件刻意保持严格：必须是「文档已加载完 **且** body 无子元素 **且** 无脚本」。抖音正常页面
+有上百个元素，反爬挑战页也自带 inline 脚本，所以这个组合不可能是「正在加载中」；而断网时的
+Chromium 错误页是有 body 内容的，所以离线不会触发这套清理。
+
+手动入口仍然是 **工具 → 修复无法加载的页面**，它直接跑完整阶梯（不是从第 1 轮开始）。
+
+### 运行日志
+
+**工具 → 打开运行日志** 打开 `userData/logs/main.log`，记录：启动信息（含实际 UA）、每次导航、
+加载结果、页面控制台的 warning/error、渲染进程退出，以及每一次空文档修复的轮次、动作、
+删掉的 cookie 和当时的页面状态。超过 512 KB 自动轮转，只留上一份。
+
+这个日志是刻意加的：前面几个问题排查时最缺的就是「出问题那一刻的现场」，只能靠推测和复现。
+
+### 单实例锁与退出时刷盘
+
+- **单实例锁**：同一配置目录只允许一个进程。抖音的 profile 是 Chromium 的 LevelDB，两个进程
+  同时写会损坏它 —— 而「半写坏的 `Local Storage/leveldb`」正是上面那个黑屏的形态。打包版和
+  `npm start` 共用配置目录，很容易不小心同时开两个。第二个实例会自动退出并把已有窗口唤到前面。
+- **退出时刷盘**：`before-quit` 里调用 `flushStorageData()` 与 `cookies.flushStore()`，
+  减少非正常退出留下的半写状态。
+
+### User-Agent
+
+Electron 会把 `<productName>/<version>` 拼进 UA，而这个 app 叫「抖音」，所以它在对外宣称自己是
+`... 抖音/0.1.4 Chrome/...` —— 一个网页没理由冒充的抖音 App 身份。实测在出问题的状态下，这个 UA
+拿回来的是 `application/json` + 0 字节，而普通 Chrome UA 拿回来的是 HTML 页面。现在只去掉这个
+token，其余保持 Chromium 原样：
+
+```
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36
+```
 
 ### 脚本配置存放位置
 

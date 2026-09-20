@@ -6,7 +6,8 @@ const http = require('node:http');
 const { isWebUrl } = require('./url-policy');
 const { hardenWebContents } = require('./web-contents-guard');
 const { attachResponsivenessHandlers } = require('./responsiveness-guard');
-const { attachBlankPageRecovery, clearDouyinSiteStorage, isBlankDocument, PROBE: BLANK_PAGE_PROBE, DOUYIN_ORIGIN } = require('./blank-page-recovery');
+const { attachBlankPageRecovery, applyLadderStep, isBlankDocument, PROBE: BLANK_PAGE_PROBE, DOUYIN_ORIGIN, LADDER } = require('./blank-page-recovery');
+const { attachPageDiagnostics, createLogFile } = require('./diagnostics');
 const { GmStore } = require('./gm-store');
 const { buildExportPayload, parseImportPayload, suggestFileName } = require('./config-transfer');
 
@@ -21,6 +22,9 @@ const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 // site data and clearing the script configuration are independent operations.
 const userscriptStore = new GmStore(path.join(app.getPath('userData'), 'userscript-config.json'));
 const userscriptMenuCommands = new Map();
+// Kept beside settings.json so it lands in the profile directory the app already
+// uses; app.setName() runs further down and must not move it.
+const log = createLogFile({ dir: path.join(path.dirname(settingsPath), 'logs') });
 let mainWindow;
 let rebuildMenuTimer;
 let userscriptLoadState = null;
@@ -37,6 +41,51 @@ app.commandLine.appendSwitch('lang', 'zh-CN');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
+// Two processes against one Chromium profile is not supported: the second one gets
+// inconsistent LevelDB stores, and the damage survives restarts. The packaged app
+// and `npm start` share a profile, so this is easy to hit by accident - and a
+// half-written `Local Storage/leveldb` is exactly what the black-screen bug looked
+// like on disk.
+const ownsProfile = app.requestSingleInstanceLock();
+if (!ownsProfile) {
+  log.warn('已有实例在使用该配置目录，本次启动退出');
+  app.quit();
+}
+
+/**
+ * A plain browser User-Agent.
+ *
+ * Electron appends `<productName>/<version>` to the default UA, and this app is
+ * named 抖音 - so it was announcing itself as `... 抖音/0.1.4 Chrome/...`, a
+ * malformed Douyin-app identity that a web page has no business claiming. Measured
+ * while the profile was stuck: that UA got `application/json` with zero bytes back
+ * while a plain Chrome UA got the HTML page. Removing just that token is the
+ * minimal change; everything else is what Chromium would send anyway.
+ */
+function browserUserAgent() {
+  const major = String(process.versions.chrome || '').split('.')[0] || '120';
+  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    + `(KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+app.on('second-instance', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
+// Let Chromium flush its stores on the way out; an unclean exit is how the on-disk
+// state ends up half-written in the first place.
+app.on('before-quit', () => {
+  try {
+    session.defaultSession.flushStorageData();
+    session.defaultSession.cookies.flushStore().catch(() => {});
+  } catch {
+    // Already shutting down.
+  }
+});
 
 function readSettings() {
   try {
@@ -296,6 +345,7 @@ function buildMenu() {
     { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },
     { label: '关闭卡住的弹窗', click: () => requestStuckDialogRecovery() },
     { label: '修复无法加载的页面', click: () => repairUnloadablePage() },
+    { label: '打开运行日志', click: () => { shell.openPath(log.path).catch(() => {}); } },
     { type: 'separator' },
     {
       label: '清除抖音网页数据',
@@ -399,14 +449,20 @@ async function createWindow() {
   });
 
   attachFrozenPageRecovery(mainWindow.webContents);
+  attachPageDiagnostics(mainWindow.webContents, log);
   attachBlankPageRecovery(mainWindow.webContents, {
     session: session.defaultSession,
+    log: (level, message, data) => log[level]?.(message, data),
     onRecovered: (info) => {
       if (info.failed) {
-        console.warn(`[抖音] 无法清除站点数据：${info.failed}`);
+        log.error('无法清除站点数据', { round: info.round, error: info.failed });
         return;
       }
-      console.warn(`[抖音] 页面加载为空，已清除站点数据并重新加载（第 ${info.attempt} 次）`);
+      log.warn('页面加载为空，已清除站点数据并重新加载', {
+        round: info.round,
+        actions: info.actions,
+        removedCookies: info.removedCookies,
+      });
     },
   });
   mainWindow.on('closed', () => { mainWindow = null; });
@@ -446,7 +502,18 @@ async function repairUnloadablePage() {
   } catch (error) {
     // Not readable; still worth a plain reload.
   }
-  if (blank) await clearDouyinSiteStorage(session.defaultSession, DOUYIN_ORIGIN).catch(() => {});
+  if (blank) {
+    // The manual action is the thorough one: run the whole ladder instead of
+    // starting at the gentlest rung.
+    try {
+      const applied = await applyLadderStep(session.defaultSession, DOUYIN_ORIGIN, LADDER.length);
+      log.warn('手动修复：已清除站点数据', applied);
+    } catch (error) {
+      log.error('手动修复失败', { error: String(error?.message || error) });
+    }
+  } else {
+    log.info('手动修复：页面正常，仅强制重载');
+  }
   if (!contents.isDestroyed()) contents.reloadIgnoringCache();
 }
 
@@ -485,12 +552,21 @@ app.on('web-contents-created', (_event, contents) => configureWebContents(conten
 // letting it look like a random freeze.
 app.on('child-process-gone', (_event, details) => {
   if (details?.type === 'GPU') {
-    console.error(`[抖音] GPU 进程异常退出（${details.reason}），页面可能被节流导致弹窗无响应`);
+    log.error('GPU 进程异常退出，页面可能被节流', { reason: details.reason });
   }
 });
 
 app.whenReady().then(async () => {
+  if (!ownsProfile) return;
   app.setAppUserModelId('com.yhgeo.douyin');
+  session.defaultSession.setUserAgent(browserUserAgent());
+  log.info('启动', {
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    userAgent: browserUserAgent(),
+    logFile: log.path,
+  });
 
   ipcMain.on('get-script-enabled', (event) => { event.returnValue = readSettings().scriptEnabled; });
   ipcMain.on('gm-menu-reset', () => {
@@ -510,18 +586,18 @@ app.whenReady().then(async () => {
   // renderer console, because a failed injection looks like "settings do nothing".
   ipcMain.on('userscript-loaded', (_event, state) => {
     userscriptLoadState = { ok: Boolean(state?.ok), message: state?.message };
-    if (!userscriptLoadState.ok) console.error(`[抖音] 内置脚本加载失败：${state?.message}`);
+    if (!userscriptLoadState.ok) log.error('内置脚本加载失败', { message: state?.message });
     scheduleMenuRebuild();
   });
   // A stuck dialog that the page recovered on its own.
   ipcMain.on('stuck-dialog-recovered', (_event, info) => {
-    console.warn(`[抖音] 页面自行恢复了卡住的弹窗：${JSON.stringify(info)}`);
+    log.info('页面自行恢复了卡住的弹窗', info);
   });
   ipcMain.on('stuck-dialog-recovery-result', (_event, result) => {
     clearTimeout(stuckDialogRecoveryPending);
     stuckDialogRecoveryPending = null;
     if (result?.recovered) {
-      console.info(`[抖音] 已关闭卡住的弹窗（${result.via}）`);
+      log.info('已关闭卡住的弹窗', { via: result.via });
       return;
     }
     dialog.showMessageBox(mainWindow, {
@@ -533,7 +609,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.on('userscript-storage-error', (_event, info) => {
-    console.error(`[抖音] 脚本配置${info?.phase === 'read' ? '读取' : '保存'}失败：${info?.message}`);
+    log.error('脚本配置读写失败', info);
   });
 
   // Userscript GM_* storage. `gm-store-read` is synchronous because the
