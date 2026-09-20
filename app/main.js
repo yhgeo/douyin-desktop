@@ -49,7 +49,9 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 // like on disk.
 const ownsProfile = app.requestSingleInstanceLock();
 if (!ownsProfile) {
-  log.warn('已有实例在使用该配置目录，本次启动退出');
+  // Actionable on purpose: this is the one way the lock can confuse someone who
+  // restarted to pick up a new build, and it exits silently otherwise.
+  log.warn('抖音已经在运行，本次启动退出（要加载新版本，请先完全退出正在运行的窗口，再重新启动）');
   app.quit();
 }
 
