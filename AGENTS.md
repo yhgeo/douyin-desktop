@@ -53,6 +53,7 @@ app/
   main/                      主进程编排
     lifecycle.js             启动顺序、单实例锁、UA、退出刷盘
     window.js                主窗口，以及挂在页面上的所有 watcher
+    titles.js                修复状态对应的窗口标题（纯函数，可单测）
     menu.js                  应用菜单
     ipc.js                   与页面侧的全部 IPC 通道
     actions.js               工具菜单里的恢复动作
