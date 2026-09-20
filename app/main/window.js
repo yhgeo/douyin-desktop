@@ -19,6 +19,20 @@ const { attachBlankPageRecovery } = require('../recovery/blank-page');
 
 let mainWindow = null;
 
+/**
+ * What the title bar should say about a repair state.
+ *
+ * A black window with no explanation is what makes people force-quit the app, so each
+ * state says what is happening and, when it is not something the app can fix, says that
+ * too - "waiting for the server" is honest, "auto-repairing" forever is not.
+ */
+function titlesFor(status) {
+  if (status.phase === 'repairing') return `${APP_NAME} — 页面加载异常，正在自动修复（第 ${status.round} 次）`;
+  if (status.phase === 'waiting-for-server') return `${APP_NAME} — 服务器暂时没有返回页面，正在等待重试（第 ${status.round} 次）`;
+  if (status.phase === 'captcha') return `${APP_NAME} — 服务器要求人机验证，请在页面中完成验证`;
+  return APP_NAME;
+}
+
 /** The live window, or null while it is being created or already gone. */
 function getMainWindow() {
   return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
@@ -87,9 +101,7 @@ async function createWindow() {
     onStatus: (status) => {
       const window = getMainWindow();
       if (!window) return;
-      window.setTitle(status.phase === 'repairing'
-        ? `${APP_NAME} — 页面加载异常，正在自动修复（第 ${status.round} 次）`
-        : APP_NAME);
+      window.setTitle(titlesFor(status));
     },
     onRecovered: (info) => {
       if (info.failed) {
@@ -110,4 +122,4 @@ async function createWindow() {
   return mainWindow;
 }
 
-module.exports = { createWindow, getMainWindow };
+module.exports = { createWindow, getMainWindow, titlesFor };

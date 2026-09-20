@@ -288,6 +288,51 @@ test('one failing action does not skip the rest of the rung', async () => {
 
   assert.deepEqual(applied.actions, ['storage', 'anti-crawl-cookies', 'http-cache']);
   assert.equal(cleared.length, 1, 'the earlier actions still ran');
-  assert.equal(applied.failed.length, 1);
-  assert.equal(applied.failed[0].action, 'http-cache');
+  assert.equal(applied.stepFailures.length, 1);
+  assert.equal(applied.stepFailures[0].action, 'http-cache');
+  // `failed` is the watcher's *hard* failure and is a string. Sharing the name made an
+  // empty array look like a failure, so every successful repair was logged as one.
+  assert.equal('failed' in applied, false);
+});
+
+test('a captcha interstitial is reported instead of being repaired', async () => {
+  // The third failure shape, found on 2026-09-21: the server answers with a small
+  // "验证码中间页" document. It has a body and scripts, so the blank detector never fired
+  // and the window stayed unusable with nothing in the log.
+  const captchaState = {
+    href: 'https://www.douyin.com/',
+    readyState: 'complete',
+    bodyChildren: 3,
+    scripts: 3,
+    decoded: 38095,
+    title: '验证码中间页',
+    captcha: true,
+  };
+  const session = fakeSession();
+  const page = new FakePage([captchaState]);
+  const statuses = [];
+  const logs = [];
+
+  attachBlankPageRecovery(page, {
+    session,
+    settleMs: 0,
+    log: (level, message, data) => logs.push({ level, message, data }),
+    onStatus: (status) => statuses.push(status),
+  });
+
+  page.emit('did-finish-load');
+  await settle();
+
+  assert.deepEqual(statuses.map((item) => item.phase), ['captcha']);
+  assert.equal(logs.filter((item) => item.message === '服务器要求人机验证').length, 1);
+  // Clearing site data is the wrong response: nothing on this machine is wrong.
+  assert.equal(session.state.cleared.length, 0);
+  assert.equal(page.reloads, 0);
+});
+
+test('the backoff stops leaning on a server that is not answering', () => {
+  // Every retry is another request against a client the server is already unhappy with,
+  // and the state only healed after the machine went quiet for five minutes.
+  assert.ok(BACKOFF_MS[0] >= 15000, 'first backoff is ' + BACKOFF_MS[0] + ' ms');
+  assert.ok(BACKOFF_MS[BACKOFF_MS.length - 1] >= 300000, 'cap is ' + BACKOFF_MS[BACKOFF_MS.length - 1] + ' ms');
 });

@@ -75,7 +75,9 @@ test('the log directory is created if it does not exist', () => {
 test('rotation keeps the configured number of previous files', () => {
   const dir = tempDir('rotate');
   // Tiny limit so a couple of lines trip it.
-  const log = quiet(() => createLogFile({ dir, maxBytes: 80, keep: 2 })).value;
+  // Small enough that every single write trips the limit: relying on an exact byte
+  // boundary made this flaky.
+  const log = quiet(() => createLogFile({ dir, maxBytes: 10, keep: 2 })).value;
 
   for (const marker of ['first', 'second', 'third', 'fourth', 'fifth']) {
     log.info(marker, { padding: 'x'.repeat(40) });

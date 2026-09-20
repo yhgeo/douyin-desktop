@@ -1,6 +1,6 @@
 {
   "name": "douyin-desktop",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "抖音网页端 Electron 桌面应用，内置抖音优化用户脚本。",
   "main": "app/main.js",
   "author": "yhgeo",
@@ -9,7 +9,7 @@
     "start": "electron .",
     "dev": "electron . --enable-logging",
     "package": "electron-builder --dir",
-    "dist": "electron-builder --win nsis portable",
+    "dist": "electron-builder --win portable",
     "lint": "node --check app/main.js && node --check app/main/lifecycle.js && node --check app/main/window.js && node --check app/main/menu.js && node --check app/main/ipc.js && node --check app/main/actions.js && node --check app/main/broadcast.js && node --check app/main/userscript-config.js && node --check app/main/userscript-menu.js && node --check app/preload/index.js && node --check app/preload/gm-api.js && node --check app/preload/inject.js && node --check app/platform/constants.js && node --check app/platform/script-meta.js && node --check app/platform/dom-ready.js && node --check app/platform/url-policy.js && node --check app/platform/web-contents-guard.js && node --check app/platform/external-links.js && node --check app/platform/http.js && node --check app/recovery/blank-page.js && node --check app/recovery/stuck-dialog.js && node --check app/recovery/responsiveness.js && node --check app/storage/settings.js && node --check app/storage/userscript-store.js && node --check app/storage/gm-store.js && node --check app/storage/config-transfer.js && node --check app/diagnostics/logger.js && node --check app/diagnostics/log-file.js && node --check app/diagnostics/page-diagnostics.js",
     "test": "node --test \"test/**/*.test.js\"",
     "test:e2e": "node tools/e2e/run-all.js",
@@ -34,17 +34,10 @@
     ],
     "win": {
       "target": [
-        "nsis",
         "portable"
       ],
       "icon": "assets/douyin-icon.png",
       "executableName": "抖音"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
     }
   },
   "devDependencies": {

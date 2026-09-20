@@ -42,14 +42,26 @@ function attachPageDiagnostics(contents, log, options = {}) {
   const dedupeMs = Number.isFinite(options.dedupeMs) ? options.dedupeMs : CONSOLE_DEDUPE_MS;
   /** `${level}|${normalizedMessage}` -> { lastLoggedAt, suppressed } */
   const seenMessages = new Map();
+  /**
+   * The last URL whose navigation was logged.
+   *
+   * Reloading the URL you are already on is what a repair does, and it is the same page
+   * coming back - so logging it again every round (and every time the user hits refresh)
+   * only buries the lines that matter. A change of URL is real navigation and is logged.
+   */
+  let lastLoggedUrl = null;
 
   const onStart = (event, url, isInPlace, isMainFrame) => {
     if (!isMainFrame) return;
+    if (url === lastLoggedUrl) return;
     log.info('开始导航', { url });
   };
 
   const onFinish = () => {
-    log.info('页面加载完成', { url: contents.getURL() });
+    const url = contents.getURL();
+    if (url === lastLoggedUrl) return;
+    lastLoggedUrl = url;
+    log.info('页面加载完成', { url });
   };
 
   const onFail = (event, errorCode, errorDescription, validatedUrl, isMainFrame) => {

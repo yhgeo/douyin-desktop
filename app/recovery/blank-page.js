@@ -103,8 +103,16 @@ function withTimeout(promise, ms, onTimeout) {
   ]);
 }
 
-/** Waits used once the escalation ladder is exhausted, in order. */
-const BACKOFF_MS = [10000, 30000, 60000, 120000];
+/**
+ * Waits used once the escalation ladder is exhausted, in order.
+ *
+ * These grew after measuring what the aggressive schedule actually did. Once the
+ * server stops serving the document at all - answering zero bytes, or a captcha
+ * interstitial - every retry is another request against a client it is already
+ * unhappy with, and the app was firing one every 10s, then 30s, then 60s, forever.
+ * The state healed only after the machine went quiet for five minutes.
+ */
+const BACKOFF_MS = [15000, 60000, 180000, 300000];
 
 /**
  * The escalation ladder. `round` is 1-based; anything beyond the ladder repeats the
@@ -116,6 +124,15 @@ const LADDER = [
   { round: 3, actions: ['storage', 'anti-crawl-cookies', 'http-cache'] },
 ];
 
+/**
+ * The server asking for a human.
+ *
+ * Douyin answers with a small "验证码中间页" document when it wants a captcha. It is
+ * not blank - it has a body and scripts - so it slipped past the blank detector and
+ * left the window unusable with nothing logged.
+ */
+const CAPTCHA_TITLE = '验证码中间页';
+
 const PROBE = `(() => {
   const nav = performance.getEntriesByType('navigation')[0];
   return {
@@ -124,6 +141,10 @@ const PROBE = `(() => {
     bodyChildren: document.body ? document.body.childElementCount : -1,
     scripts: document.scripts.length,
     decoded: nav ? nav.decodedBodySize : -1,
+    title: document.title,
+    // The captcha interstitial embeds the verify centre; a real page never does.
+    captcha: document.title === '${CAPTCHA_TITLE}'
+      || Boolean(document.querySelector('iframe[src*="verifycenter"], iframe[src*="rmc-nocaptcha"]')),
   };
 })()`;
 
@@ -188,13 +209,17 @@ async function clearAntiCrawlCookies(targetSession, origin = DOUYIN_ORIGIN, time
  * reload is what turns "we changed something" into "the page gets another chance". The
  * next round will try the failed action again.
  *
- * @returns {Promise<{ actions: string[], removedCookies: string[], failed: object[] }>}
+ * `stepFailures` is deliberately not called `failed`: the watcher reports a hard
+ * failure as a *string* under that name, and an empty array is truthy, so sharing the
+ * field made every successful repair look like a failure.
+ *
+ * @returns {Promise<{ actions: string[], removedCookies: string[], stepFailures: object[] }>}
  */
 async function applyLadderStep(targetSession, origin, round) {
   const index = Math.min(Math.max(round, 1), LADDER.length) - 1;
   const { actions } = LADDER[index];
   const removedCookies = [];
-  const failed = [];
+  const stepFailures = [];
 
   for (const action of actions) {
     try {
@@ -202,11 +227,11 @@ async function applyLadderStep(targetSession, origin, round) {
       else if (action === 'anti-crawl-cookies') removedCookies.push(...await clearAntiCrawlCookies(targetSession, origin));
       else if (action === 'http-cache') await targetSession.clearCache();
     } catch (error) {
-      failed.push({ action, error: String((error && error.message) || error) });
+      stepFailures.push({ action, error: String((error && error.message) || error) });
     }
   }
 
-  return { actions, removedCookies, failed };
+  return { actions, removedCookies, stepFailures };
 }
 
 /** How long to wait before retrying, given the round number. */
@@ -247,6 +272,8 @@ function attachBlankPageRecovery(contents, options = {}) {
   let rounds = 0;
   let timer = null;
   let stopped = false;
+  /** Report the captcha interstitial once per episode, not once per check. */
+  let captchaReported = false;
 
   const stop = () => { clearTimeout(timer); timer = null; };
 
@@ -261,14 +288,14 @@ function attachBlankPageRecovery(contents, options = {}) {
   };
 
   const repair = async (round) => {
-    let applied = { actions: [], removedCookies: [] };
+    let applied = { actions: [], removedCookies: [], stepFailures: [] };
     try {
       // Backstop for anything inside the step that talks to another process: if it never
       // answers, keep climbing rather than waiting forever on a black window.
       applied = await withTimeout(
         applyLadderStep(targetSession, origin, round),
         STEP_TIMEOUT_MS,
-        { actions: [], removedCookies: [], timedOut: true },
+        { actions: [], removedCookies: [], stepFailures: [], timedOut: true },
       );
     } catch (error) {
       log('error', '清除站点数据失败', { round, error: String((error && error.message) || error) });
@@ -284,7 +311,20 @@ function attachBlankPageRecovery(contents, options = {}) {
     const state = await inspect();
     if (!state) return;
 
+    if (state.captcha) {
+      // Not blank, but just as unusable - and clearing site data would not help,
+      // because nothing on this machine is wrong. Report it and stop climbing.
+      rounds = 0;
+      if (!captchaReported) {
+        captchaReported = true;
+        log('warn', '服务器要求人机验证', { href: state.href, title: state.title });
+        onStatus({ phase: 'captcha', href: state.href });
+      }
+      return;
+    }
+
     if (!isBlankDocument(state)) {
+      captchaReported = false;
       if (rounds > 0) {
         log('info', '页面已恢复', { rounds, scripts: state.scripts, decoded: state.decoded, href: state.href });
         onStatus({ phase: 'healthy', rounds });
@@ -300,8 +340,16 @@ function attachBlankPageRecovery(contents, options = {}) {
 
     rounds += 1;
     const wait = backoffForRound(rounds);
-    log('warn', '页面加载为空，准备修复', { round: rounds, waitMs: wait, state });
-    onStatus({ phase: 'repairing', round: rounds, waitMs: wait });
+    // Past the ladder this is no longer "we can fix this", it is "the server is not
+    // answering" - worth saying differently so the log and the title bar stop implying
+    // that a local repair is imminent.
+    const phase = rounds > LADDER.length ? 'waiting-for-server' : 'repairing';
+    log('warn', phase === 'repairing' ? '页面加载为空，准备修复' : '页面仍为空，等待服务器恢复', {
+      round: rounds,
+      waitMs: wait,
+      state,
+    });
+    onStatus({ phase, round: rounds, waitMs: wait });
 
     if (wait > 0) {
       stop();
@@ -340,6 +388,7 @@ function attachBlankPageRecovery(contents, options = {}) {
 
 module.exports = {
   ANTI_CRAWL_COOKIE_PREFIX,
+  CAPTCHA_TITLE,
   BACKOFF_MS,
   COOKIE_TIMEOUT_MS,
   DOUYIN_ORIGIN,
