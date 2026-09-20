@@ -6,6 +6,7 @@ const http = require('node:http');
 const { isWebUrl } = require('./url-policy');
 const { hardenWebContents } = require('./web-contents-guard');
 const { attachResponsivenessHandlers } = require('./responsiveness-guard');
+const { attachBlankPageRecovery, clearDouyinSiteStorage, isBlankDocument, PROBE: BLANK_PAGE_PROBE, DOUYIN_ORIGIN } = require('./blank-page-recovery');
 const { GmStore } = require('./gm-store');
 const { buildExportPayload, parseImportPayload, suggestFileName } = require('./config-transfer');
 
@@ -294,6 +295,7 @@ function buildMenu() {
   const toolSubmenu = [
     { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },
     { label: '关闭卡住的弹窗', click: () => requestStuckDialogRecovery() },
+    { label: '修复无法加载的页面', click: () => repairUnloadablePage() },
     { type: 'separator' },
     {
       label: '清除抖音网页数据',
@@ -397,6 +399,16 @@ async function createWindow() {
   });
 
   attachFrozenPageRecovery(mainWindow.webContents);
+  attachBlankPageRecovery(mainWindow.webContents, {
+    session: session.defaultSession,
+    onRecovered: (info) => {
+      if (info.failed) {
+        console.warn(`[抖音] 无法清除站点数据：${info.failed}`);
+        return;
+      }
+      console.warn(`[抖音] 页面加载为空，已清除站点数据并重新加载（第 ${info.attempt} 次）`);
+    },
+  });
   mainWindow.on('closed', () => { mainWindow = null; });
   await mainWindow.loadURL(HOME_URL);
   mainWindow.setTitle(APP_NAME);
@@ -417,6 +429,27 @@ async function createWindow() {
  * Douyin's synchronous cleanup (the one its countdown uses); see
  * app/stuck-dialog-recovery.js.
  */
+/**
+ * Repair a window that loaded an empty document.
+ *
+ * Douyin refuses to serve the page when its persisted site state is damaged, and
+ * the window stays black across reloads and restarts. Clearing the site's non-cookie
+ * storage lets the anti-crawl challenge run from scratch again; the login survives.
+ * See app/blank-page-recovery.js for the measurements behind this.
+ */
+async function repairUnloadablePage() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const contents = mainWindow.webContents;
+  let blank = false;
+  try {
+    blank = isBlankDocument(await contents.executeJavaScript(BLANK_PAGE_PROBE, true));
+  } catch (error) {
+    // Not readable; still worth a plain reload.
+  }
+  if (blank) await clearDouyinSiteStorage(session.defaultSession, DOUYIN_ORIGIN).catch(() => {});
+  if (!contents.isDestroyed()) contents.reloadIgnoringCache();
+}
+
 let stuckDialogRecoveryPending = null;
 
 function requestStuckDialogRecovery() {

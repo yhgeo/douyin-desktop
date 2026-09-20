@@ -89,7 +89,7 @@ function tempDir(name) {
 // ---------------------------------------------------------------------------
 ensureCerts();
 
-process.stdout.write('\n[1/5] popup + custom scheme blocking\n');
+process.stdout.write('\n[1/6] popup + custom scheme blocking\n');
 // ---------------------------------------------------------------------------
 {
   const { read } = runElectron('popup-guard-main.js');
@@ -166,7 +166,7 @@ process.stdout.write('\n[1/5] popup + custom scheme blocking\n');
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[2/5] userscript injection timing (root cause of the old failure)\n');
+process.stdout.write('\n[2/6] userscript injection timing (root cause of the old failure)\n');
 // ---------------------------------------------------------------------------
 {
   const { read } = runElectron('injection-timing-main.js');
@@ -185,7 +185,7 @@ process.stdout.write('\n[2/5] userscript injection timing (root cause of the old
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[3/5] userscript injection + settings persistence\n');
+process.stdout.write('\n[3/6] userscript injection + settings persistence\n');
 // ---------------------------------------------------------------------------
 {
   const userData = tempDir('persist');
@@ -229,7 +229,7 @@ process.stdout.write('\n[3/5] userscript injection + settings persistence\n');
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[4/5] clearing web data vs script data are independent\n');
+process.stdout.write('\n[4/6] clearing web data vs script data are independent\n');
 // ---------------------------------------------------------------------------
 {
   const userData = tempDir('clear');
@@ -269,7 +269,7 @@ process.stdout.write('\n[4/5] clearing web data vs script data are independent\n
 }
 
 // ---------------------------------------------------------------------------
-process.stdout.write('\n[5/5] stuck login-save dialog recovery\n');
+process.stdout.write('\n[5/6] stuck login-save dialog recovery\n');
 // ---------------------------------------------------------------------------
 {
   const userData = tempDir('stuck-dialog');
@@ -304,6 +304,53 @@ process.stdout.write('\n[5/5] stuck login-save dialog recovery\n');
   check('the watcher recovers it without any user action', report?.afterWatcher?.dialog === false,
     JSON.stringify(report?.afterWatcher));
   check('and the mask goes with it', report?.afterWatcher?.mask === false);
+
+  fs.rmSync(userData, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+process.stdout.write('\n[6/6] blank page recovery (Douyin refuses to serve the document)\n');
+// ---------------------------------------------------------------------------
+{
+  const userData = tempDir('blank-page');
+  const { read } = runElectron('blank-page-main.js', [`--e2e-user-data=${userData}`]);
+  const report = JSON.parse(read('BLANK_REPORT=') || 'null');
+
+  check('page loaded from the local stub, not the real site', report?.final?.isLocalStub === true);
+  // The stub only serves a real page once storage has been cleared, so reaching it
+  // proves the recovery ran rather than the page having loaded by itself.
+  check('the server refused the document (empty body, no scripts)',
+    report?.blankShape?.bodyChildren === 0 && report?.blankShape?.scripts === 0,
+    JSON.stringify(report?.blankShape));
+  check('the refused document was a completed load, not a half-parsed one',
+    report?.blankShape?.readyState === 'complete', report?.blankShape?.readyState);
+
+  check('the blank page was detected and repaired', (report?.recoveries || []).length === 1,
+    JSON.stringify(report?.recoveries));
+  check('the repair is reported as the first attempt', report?.recoveries?.[0]?.attempt === 1);
+  check('the repair did not fail', !report?.recoveries?.[0]?.failed, report?.recoveries?.[0]?.failed);
+
+  check('storage for the douyin origin was cleared',
+    report?.clearOptions?.origin === 'https://www.douyin.com', JSON.stringify(report?.clearOptions));
+  // Cookies are deliberately excluded: clearing them would log the user out, and they
+  // were proven not to be the cause.
+  check('cookies were NOT cleared',
+    Array.isArray(report?.clearOptions?.storages)
+    && report.clearOptions.storages.length > 0
+    && !report.clearOptions.storages.includes('cookies'),
+    JSON.stringify(report?.clearOptions?.storages));
+  check('the local storage that breaks the challenge was cleared',
+    (report?.clearOptions?.storages || []).includes('localstorage'));
+
+  check('the page came back after the repair', report?.goodPage === true);
+  check('and it is the real page, with content and scripts',
+    (report?.final?.bodyChildren ?? 0) > 0 && (report?.final?.scripts ?? 0) > 0,
+    JSON.stringify(report?.final));
+  // Proof the clear actually reached the page's storage rather than being a no-op.
+  check('the site storage breadcrumb is gone', report?.final?.probeKeyAfter === null,
+    'probeKeyAfter=' + JSON.stringify(report?.final?.probeKeyAfter));
+  check('a healthy page is not repaired again', report?.extraRequestsAfterHealthyLoad === 0,
+    'extraRequests=' + String(report?.extraRequestsAfterHealthyLoad));
 
   fs.rmSync(userData, { recursive: true, force: true });
 }

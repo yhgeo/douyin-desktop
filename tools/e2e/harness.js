@@ -59,6 +59,23 @@ const STUB_MARKER = '__douyinDesktopLocalStub';
 
 /** Start the fake douyin.com origin. Resolves once it is listening. */
 async function serveDouyinPage(port, html) {
+  return serveDouyinOrigin(port, (_request, response) => {
+    response.setHeader('content-type', 'text/html; charset=utf-8');
+    response.end(html);
+  });
+}
+
+/**
+ * Start the fake douyin.com origin with a per-request handler.
+ *
+ * Needed to reproduce a server that refuses the document: the first navigation gets
+ * an empty body, and only after the site storage has been reset does a real page
+ * come back.
+ *
+ * @param {number} port
+ * @param {(request: import('node:http').IncomingMessage, response: import('node:http').ServerResponse) => void} handler
+ */
+async function serveDouyinOrigin(port, handler) {
   if (!ensureCerts()) throw new Error('e2e certificate unavailable (is openssl installed?)');
 
   const server = https.createServer(
@@ -66,10 +83,7 @@ async function serveDouyinPage(port, html) {
       key: fs.readFileSync(path.join(CERT_DIR, 'key.pem')),
       cert: fs.readFileSync(path.join(CERT_DIR, 'cert.pem')),
     },
-    (_request, response) => {
-      response.setHeader('content-type', 'text/html; charset=utf-8');
-      response.end(html);
-    },
+    (request, response) => handler(request, response),
   );
 
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
@@ -154,5 +168,6 @@ module.exports = {
   installPreloadIpc,
   parseLine,
   readLine,
+  serveDouyinOrigin,
   serveDouyinPage,
 };
