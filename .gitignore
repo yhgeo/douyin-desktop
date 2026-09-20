@@ -14,3 +14,7 @@ tools/e2e/certs/
 
 # Local AI-assistant workspace data.
 .workbuddy-ai/
+
+# NVIDIA's user-mode driver drops its logs here (relative path) when the GPU process
+# crashes while the working directory is the project - seen 2026-09-20 22:20.
+NVIDIA Corporation/
