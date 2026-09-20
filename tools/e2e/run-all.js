@@ -59,8 +59,16 @@ function check(label, condition, detail) {
 }
 
 function runElectron(script, extraArgs = []) {
+  // Some shells (and agent sandboxes) export ELECTRON_RUN_AS_NODE=1, which makes
+  // the Electron binary behave as plain Node and every test fail confusingly.
+  // NODE_OPTIONS can likewise inject a preload that is not valid inside Electron.
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.NODE_OPTIONS;
+
   const result = spawnSync(electron, [path.join(__dirname, script), ...extraArgs], {
     cwd: ROOT,
+    env,
     encoding: 'utf8',
     timeout: 180000,
   });

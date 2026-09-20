@@ -110,6 +110,7 @@ function installPreloadIpc(options = {}) {
     userscriptLoadStates: [],
     storageErrors: [],
     menuCommands: [],
+    actions: [],
   };
 
   ipcMain.on('get-script-enabled', (event) => { event.returnValue = options.scriptEnabled !== false; });

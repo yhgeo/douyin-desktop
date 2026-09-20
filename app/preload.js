@@ -84,7 +84,9 @@ function gmAddValueChangeListener(key, callback) {
 function gmRemoveValueChangeListener(id) { valueListeners.delete(id); }
 function gmRegisterMenuCommand(name, callback) {
   const id = `gm-menu-${++menuCommandId}`;
-  menuCommands.set(id, { name: String(name), callback });
+  // `id` is stored on the record as well: the settings entry lists commands and
+  // invokes them by id, so a record without one could never be triggered.
+  menuCommands.set(id, { id, name: String(name), callback });
   if (isTopFrame) ipcRenderer.send('gm-menu-register', { id, name: String(name) });
   return id;
 }

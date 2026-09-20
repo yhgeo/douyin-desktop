@@ -78,6 +78,13 @@ app.whenReady().then(async () => {
 
   const pageState = await win.webContents.executeJavaScript(`(() => {
     const styles = [...document.head.querySelectorAll('style')];
+    const entry = document.getElementById('douyin-desktop-settings-entry');
+    const sidebar = document.getElementById('douyin-sidebar-new');
+    const anchor = sidebar
+      ? [...sidebar.querySelectorAll('button, a, [role="button"], li')]
+          .filter((el) => /设置/.test([el.textContent, el.getAttribute('aria-label'), el.getAttribute('title')].filter(Boolean).join(' ')))
+          .pop() || null
+      : null;
     return {
       href: location.href,
       title: document.title,
@@ -89,6 +96,21 @@ app.whenReady().then(async () => {
       blockCssPresent: styles.some((node) => /data-e2e|semiTabPanel|douyin/i.test(node.textContent || '')),
       gmApiPresent: typeof GM_getValue === 'function',
       storedKeys: typeof GM_listValues === 'function' ? GM_listValues() : null,
+
+      // --- settings entry, validated against the LIVE sidebar ---
+      sidebarFound: Boolean(sidebar),
+      anchorFound: Boolean(anchor),
+      anchorText: anchor ? anchor.textContent.trim() : null,
+      anchorSelector: anchor
+        ? anchor.tagName.toLowerCase() + (anchor.id ? '#' + anchor.id : '') + (anchor.className && typeof anchor.className === 'string' ? '.' + anchor.className.trim().split(/\\s+/).join('.') : '')
+        : null,
+      entryExists: Boolean(entry),
+      entryText: entry ? entry.textContent.trim() : null,
+      entryIsSiblingAfterAnchor: Boolean(entry && anchor && entry.previousElementSibling === anchor),
+      entryInsideSidebar: Boolean(entry && sidebar && sidebar.contains(entry)),
+      entryPosition: entry ? getComputedStyle(entry).position : null,
+      entryRect: entry ? (() => { const r = entry.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; })() : null,
+      menuHostExists: Boolean(document.getElementById('douyin-desktop-settings-host')),
     };
   })()`);
 

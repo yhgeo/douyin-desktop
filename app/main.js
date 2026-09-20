@@ -6,10 +6,13 @@ const http = require('node:http');
 const { isWebUrl } = require('./url-policy');
 const { hardenWebContents } = require('./web-contents-guard');
 const { GmStore } = require('./gm-store');
+const { buildExportPayload, parseImportPayload, suggestFileName } = require('./config-transfer');
 
 const APP_NAME = '抖音';
 const HOME_URL = 'https://www.douyin.com/';
 const SCRIPT_NAME = '抖音优化';
+// Kept in sync with GM_info in app/preload.js; written into backup files.
+const SCRIPT_VERSION = '2026.9.17.17';
 const ICON_PATH = path.join(__dirname, '..', 'assets', 'douyin-icon.png');
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
 // Userscript GM_* values are owned here, not by the page, so clearing Douyin's
@@ -112,14 +115,6 @@ function clearUserscriptData() {
   mainWindow?.webContents.reload();
 }
 
-function configureWebContents(contents) {
-  hardenWebContents(contents, {
-    openExternal: openExternalSafely,
-    onBlocked: logBlockedRequest,
-    title: APP_NAME,
-  });
-}
-
 function findUserscriptCommand(namePattern) {
   return [...userscriptMenuCommands.values()].find((item) => namePattern.test(item.name));
 }
@@ -127,6 +122,104 @@ function findUserscriptCommand(namePattern) {
 function invokeUserscriptCommand(command) {
   if (!command || !mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send('invoke-gm-menu-command', command.id);
+}
+
+/** Write the whole script configuration to a user-chosen JSON file. */
+async function exportUserscriptConfig() {
+  try {
+    const payload = buildExportPayload(userscriptStore.getAll(), {
+      scriptName: SCRIPT_NAME,
+      scriptVersion: SCRIPT_VERSION,
+    });
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出脚本配置',
+      defaultPath: path.join(app.getPath('documents'), suggestFileName(SCRIPT_NAME)),
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+
+    fs.writeFileSync(result.filePath, JSON.stringify(payload, null, 2), 'utf8');
+    await dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: '导出完成',
+      message: `已导出 ${Object.keys(payload.values).length} 项配置`,
+      detail: result.filePath,
+      buttons: ['好'],
+    });
+    return { ok: true, path: result.filePath, keys: Object.keys(payload.values) };
+  } catch (error) {
+    console.error('[抖音] 导出脚本配置失败', error);
+    await dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: '导出失败',
+      message: String(error?.message || error),
+      buttons: ['好'],
+    });
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+/** Restore the whole script configuration from a user-chosen JSON file. */
+async function importUserscriptConfig() {
+  try {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: '导入脚本配置',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePaths?.length) return { ok: false, canceled: true };
+
+    const filePath = result.filePaths[0];
+    const parsed = parseImportPayload(fs.readFileSync(filePath, 'utf8'));
+    if (!parsed.ok) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: '导入失败',
+        message: parsed.error,
+        detail: filePath,
+        buttons: ['好'],
+      });
+      return { ok: false, error: parsed.error };
+    }
+
+    const confirm = await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      buttons: ['取消', '导入并覆盖'],
+      defaultId: 1,
+      cancelId: 0,
+      title: '导入脚本配置',
+      message: `即将导入 ${parsed.keys.length} 项配置。`,
+      detail: '当前「抖音优化」的全部配置会被覆盖，确定继续吗？',
+    });
+    if (confirm.response !== 1) return { ok: false, canceled: true };
+
+    userscriptStore.replaceAll(parsed.values);
+    for (const contents of webContents.getAllWebContents()) {
+      if (!contents.isDestroyed()) contents.send('gm-store-replaced', parsed.values);
+    }
+    userscriptMenuCommands.clear();
+    userscriptLoadState = null;
+    scheduleMenuRebuild();
+    mainWindow?.webContents.reload();
+    return { ok: true, keys: parsed.keys };
+  } catch (error) {
+    console.error('[抖音] 导入脚本配置失败', error);
+    await dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: '导入失败',
+      message: String(error?.message || error),
+      buttons: ['好'],
+    });
+    return { ok: false, error: String(error?.message || error) };
+  }
+}
+
+function configureWebContents(contents) {
+  hardenWebContents(contents, {
+    openExternal: openExternalSafely,
+    onBlocked: logBlockedRequest,
+    title: APP_NAME,
+  });
 }
 
 function scheduleMenuRebuild() {
@@ -167,6 +260,9 @@ function buildMenu() {
       enabled: settings.scriptEnabled && Boolean(mobileSettings),
       click: () => invokeUserscriptCommand(mobileSettings),
     },
+    { type: 'separator' },
+    { label: '导出配置到文件…', click: () => exportUserscriptConfig() },
+    { label: '从文件导入配置…', click: () => importUserscriptConfig() },
   ];
 
   if (extraScriptCommands.length) {
@@ -183,6 +279,49 @@ function buildMenu() {
       enabled: false,
     });
   }
+
+  const toolSubmenu = [
+    { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },
+    { type: 'separator' },
+    {
+      label: '清除抖音网页数据',
+      click: async () => {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: ['取消', '清除'],
+          defaultId: 0,
+          cancelId: 0,
+          title: '清除抖音网页数据',
+          message: '这会清除登录状态、Cookie、网页缓存和网页本地数据。',
+          detail: '「抖音优化」的脚本配置会保留。确定继续吗？',
+        });
+        if (result.response !== 1) return;
+        // Script configuration lives in the main process, not in site
+        // storage, so it is untouched by this.
+        await session.defaultSession.clearStorageData();
+        await session.defaultSession.clearCache();
+        mainWindow?.webContents.reload();
+      },
+    },
+    {
+      label: '清除脚本配置数据',
+      click: async () => {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'warning',
+          buttons: ['取消', '清除'],
+          defaultId: 0,
+          cancelId: 0,
+          title: '清除脚本配置数据',
+          message: '这会清除「抖音优化」的全部配置，恢复为默认设置。',
+          detail: '登录状态和网页数据会保留。确定继续吗？',
+        });
+        if (result.response !== 1) return;
+        clearUserscriptData();
+      },
+    },
+    { type: 'separator' },
+    { label: '退出抖音', accelerator: 'Alt+F4', role: 'quit' },
+  ];
 
   const menu = Menu.buildFromTemplate([
     {
@@ -205,51 +344,7 @@ function buildMenu() {
         { label: '全屏', accelerator: 'F11', role: 'togglefullscreen' },
       ],
     },
-    {
-      label: '工具',
-      submenu: [
-        { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },
-        { type: 'separator' },
-        {
-          label: '清除抖音网页数据',
-          click: async () => {
-            const result = await dialog.showMessageBox(mainWindow, {
-              type: 'warning',
-              buttons: ['取消', '清除'],
-              defaultId: 0,
-              cancelId: 0,
-              title: '清除抖音网页数据',
-              message: '这会清除登录状态、Cookie、网页缓存和网页本地数据。',
-              detail: '「抖音优化」的脚本配置会保留。确定继续吗？',
-            });
-            if (result.response !== 1) return;
-            // Script configuration lives in the main process, not in site
-            // storage, so it is untouched by this.
-            await session.defaultSession.clearStorageData();
-            await session.defaultSession.clearCache();
-            mainWindow?.webContents.reload();
-          },
-        },
-        {
-          label: '清除脚本配置数据',
-          click: async () => {
-            const result = await dialog.showMessageBox(mainWindow, {
-              type: 'warning',
-              buttons: ['取消', '清除'],
-              defaultId: 0,
-              cancelId: 0,
-              title: '清除脚本配置数据',
-              message: '这会清除「抖音优化」的全部配置，恢复为默认设置。',
-              detail: '登录状态和网页数据会保留。确定继续吗？',
-            });
-            if (result.response !== 1) return;
-            clearUserscriptData();
-          },
-        },
-        { type: 'separator' },
-        { label: '退出抖音', accelerator: 'Alt+F4', role: 'quit' },
-      ],
-    },
+    { label: '工具', submenu: toolSubmenu },
     {
       label: '帮助',
       submenu: [

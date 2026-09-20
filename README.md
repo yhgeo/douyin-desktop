@@ -15,6 +15,7 @@
 - 全中文桌面菜单、抖音应用名称与图标
 - 拦截 `bytedance://` 等未安装的外部协议，避免 Windows 弹出“选择应用”窗口
 - 分别清除「抖音网页数据」与「脚本配置数据」，两者互不影响
+- 脚本配置支持导出到文件 / 从文件导入，便于备份与恢复
 - Electron Builder Windows 安装版与便携版构建配置
 
 ## 开发
@@ -27,13 +28,15 @@ npm run start
 首次运行后，可在窗口顶部的 **抖音优化** 菜单中：
 
 - 启用或停用抖音优化
-- 打开桌面端配置界面
-- 打开移动端配置界面
+- 打开配置界面 / 打开移动端配置
+- 导出配置到文件 / 从文件导入配置
+
+脚本自身的设置面板保持原样，未做任何改动。
 
 ## 测试
 
 ```powershell
-npm test          # 纯单元测试：URL / 协议策略
+npm test          # 纯单元测试：URL / 协议策略、配置导入导出与备份恢复
 npm run test:e2e  # Electron 端到端测试（真实 preload + 真实 douyin.com 源）
 npm run test:all  # 全部
 ```
@@ -49,8 +52,30 @@ npm run test:all  # 全部
 > 测试同时传了 `--no-proxy-server`：如果本机配置了代理，Chromium 会把请求交给代理而
 > 不做本地解析，`host-resolver-rules` 就会失效，测试会**悄悄打到真实的 douyin.com**。
 > 每个用例都会断言 `window.__douyinDesktopLocalStub` 来证明自己确实跑在本地桩页面上。
+>
+> 测试运行器会清掉 `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS`：前者会让 Electron 退化成
+> 普通 Node，导致所有用例以难以理解的方式失败。
 
 ## 实现说明
+
+### 配置导入导出
+
+菜单里的「导出配置到文件 / 从文件导入配置」由 `app/config-transfer.js`（格式与校验）
+配合主进程的系统文件对话框完成：
+
+```json
+{
+  "app": "douyin-desktop",
+  "format": 1,
+  "exportedAt": "2026-09-20T01:00:00.000Z",
+  "script": { "name": "抖音优化", "version": "2026.9.17.17" },
+  "values": { "GM_Panel": {}, "short-cut": [] }
+}
+```
+
+导入时同时接受这种包装格式和**裸的 `{ key: value }`**——后者正是脚本自身
+「导出至文件」产出的格式，因此桌面端与 Tampermonkey 的备份可以互相通用。
+导入会先确认再整体覆盖，并校验文件非空、是 JSON 对象、体积不超过 8 MB。
 
 ### 脚本配置存放位置
 
