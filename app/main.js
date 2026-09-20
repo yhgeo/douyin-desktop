@@ -1,17 +1,24 @@
-const { app, BrowserWindow, Menu, session, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, Menu, session, ipcMain, shell, dialog, webContents } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const https = require('node:https');
 const http = require('node:http');
+const { isWebUrl } = require('./url-policy');
+const { hardenWebContents } = require('./web-contents-guard');
+const { GmStore } = require('./gm-store');
 
 const APP_NAME = '抖音';
 const HOME_URL = 'https://www.douyin.com/';
 const SCRIPT_NAME = '抖音优化';
 const ICON_PATH = path.join(__dirname, '..', 'assets', 'douyin-icon.png');
 const settingsPath = path.join(app.getPath('userData'), 'settings.json');
+// Userscript GM_* values are owned here, not by the page, so clearing Douyin's
+// site data and clearing the script configuration are independent operations.
+const userscriptStore = new GmStore(path.join(app.getPath('userData'), 'userscript-config.json'));
 const userscriptMenuCommands = new Map();
 let mainWindow;
 let rebuildMenuTimer;
+let userscriptLoadState = null;
 
 app.setName(APP_NAME);
 app.commandLine.appendSwitch('lang', 'zh-CN');
@@ -25,8 +32,14 @@ function readSettings() {
 }
 
 function writeSettings(settings) {
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  try {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+    return true;
+  } catch (error) {
+    console.error('[抖音] 保存应用设置失败', settingsPath, error);
+    return false;
+  }
 }
 
 function requestUrl(url, options = {}) {
@@ -59,39 +72,51 @@ function requestUrl(url, options = {}) {
   });
 }
 
-function isDouyinHttpUrl(rawUrl) {
-  try {
-    const url = new URL(rawUrl);
-    return ['http:', 'https:'].includes(url.protocol)
-      && (url.hostname === 'douyin.com' || url.hostname.endsWith('.douyin.com')
-        || url.hostname === 'iesdouyin.com' || url.hostname.endsWith('.iesdouyin.com'));
-  } catch {
+/**
+ * The single place the app is allowed to hand a URL to the operating system.
+ * Only real web URLs pass; custom schemes such as `bytedance://` are refused
+ * here as well, so no caller can accidentally trigger the Windows
+ * "需要新应用以打开此链接" dialog.
+ */
+function openExternalSafely(rawUrl) {
+  if (!isWebUrl(rawUrl)) {
+    console.warn('[抖音] 已拦截外部协议调用', rawUrl);
     return false;
+  }
+  shell.openExternal(rawUrl).catch((error) => {
+    console.error('[抖音] 打开外部链接失败', rawUrl, error);
+  });
+  return true;
+}
+
+function logBlockedRequest(info) {
+  console.warn(`[抖音] 已拦截${info.reason === 'popup-blocked' ? '弹窗' : '跳转'}（${info.kind}）：${info.url}`);
+}
+
+/** Push a change to every frame so no frame keeps serving a stale value. */
+function broadcastStoreChange(change) {
+  for (const contents of webContents.getAllWebContents()) {
+    if (!contents.isDestroyed()) contents.send('gm-store-changed', change);
   }
 }
 
-function isWebUrl(rawUrl) {
-  try { return ['http:', 'https:'].includes(new URL(rawUrl).protocol); } catch { return false; }
+/** Wipe the userscript's stored configuration and restart it cleanly. */
+function clearUserscriptData() {
+  userscriptStore.clear();
+  for (const contents of webContents.getAllWebContents()) {
+    if (!contents.isDestroyed()) contents.send('gm-store-replaced', {});
+  }
+  userscriptMenuCommands.clear();
+  userscriptLoadState = null;
+  scheduleMenuRebuild();
+  mainWindow?.webContents.reload();
 }
 
 function configureWebContents(contents) {
-  contents.setWindowOpenHandler(({ url }) => {
-    if (isDouyinHttpUrl(url)) return { action: 'allow' };
-    if (isWebUrl(url)) shell.openExternal(url);
-    // Do not hand custom schemes such as bytedance:// to Windows. Doing so causes
-    // the system "Get an app to open this link" dialog shown by the user.
-    return { action: 'deny' };
-  });
-
-  contents.on('will-navigate', (event, url) => {
-    if (!isWebUrl(url)) event.preventDefault();
-  });
-  contents.on('will-redirect', (event, url) => {
-    if (!isWebUrl(url)) event.preventDefault();
-  });
-  contents.on('page-title-updated', (event) => {
-    event.preventDefault();
-    BrowserWindow.fromWebContents(contents)?.setTitle(APP_NAME);
+  hardenWebContents(contents, {
+    openExternal: openExternalSafely,
+    onBlocked: logBlockedRequest,
+    title: APP_NAME,
   });
 }
 
@@ -125,6 +150,7 @@ function buildMenu() {
       click: (item) => {
         writeSettings({ ...readSettings(), scriptEnabled: item.checked });
         userscriptMenuCommands.clear();
+        userscriptLoadState = null;
         mainWindow?.webContents.reload();
         scheduleMenuRebuild();
       },
@@ -148,6 +174,14 @@ function buildMenu() {
     for (const command of extraScriptCommands) {
       scriptSubmenu.push({ label: command.name, click: () => invokeUserscriptCommand(command) });
     }
+  }
+
+  if (userscriptLoadState && !userscriptLoadState.ok) {
+    scriptSubmenu.push({ type: 'separator' });
+    scriptSubmenu.push({
+      label: `⚠ 内置脚本加载失败：${userscriptLoadState.message || '未知错误'}`,
+      enabled: false,
+    });
   }
 
   const menu = Menu.buildFromTemplate([
@@ -175,20 +209,41 @@ function buildMenu() {
       label: '工具',
       submenu: [
         { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => mainWindow?.webContents.toggleDevTools() },
+        { type: 'separator' },
         {
-          label: '清除抖音站点数据',
+          label: '清除抖音网页数据',
           click: async () => {
             const result = await dialog.showMessageBox(mainWindow, {
               type: 'warning',
               buttons: ['取消', '清除'],
               defaultId: 0,
               cancelId: 0,
-              title: '清除站点数据',
-              message: '这会清除登录状态、Cookie 和本地设置。确定继续吗？',
+              title: '清除抖音网页数据',
+              message: '这会清除登录状态、Cookie、网页缓存和网页本地数据。',
+              detail: '「抖音优化」的脚本配置会保留。确定继续吗？',
             });
             if (result.response !== 1) return;
+            // Script configuration lives in the main process, not in site
+            // storage, so it is untouched by this.
             await session.defaultSession.clearStorageData();
+            await session.defaultSession.clearCache();
             mainWindow?.webContents.reload();
+          },
+        },
+        {
+          label: '清除脚本配置数据',
+          click: async () => {
+            const result = await dialog.showMessageBox(mainWindow, {
+              type: 'warning',
+              buttons: ['取消', '清除'],
+              defaultId: 0,
+              cancelId: 0,
+              title: '清除脚本配置数据',
+              message: '这会清除「抖音优化」的全部配置，恢复为默认设置。',
+              detail: '登录状态和网页数据会保留。确定继续吗？',
+            });
+            if (result.response !== 1) return;
+            clearUserscriptData();
           },
         },
         { type: 'separator' },
@@ -198,8 +253,8 @@ function buildMenu() {
     {
       label: '帮助',
       submenu: [
-        { label: '抖音优化脚本主页', click: () => shell.openExternal('https://scriptcat.org/zh-CN/script-show-page/2534') },
-        { label: '项目仓库', click: () => shell.openExternal('https://github.com/yhgeo/douyin-desktop') },
+        { label: '抖音优化脚本主页', click: () => openExternalSafely('https://scriptcat.org/zh-CN/script-show-page/2534') },
+        { label: '项目仓库', click: () => openExternalSafely('https://github.com/yhgeo/douyin-desktop') },
       ],
     },
   ]);
@@ -248,6 +303,34 @@ app.whenReady().then(async () => {
   ipcMain.on('gm-menu-unregister', (_event, id) => {
     userscriptMenuCommands.delete(id);
     scheduleMenuRebuild();
+  });
+  // Surface a failed bundle injection instead of leaving it buried in the
+  // renderer console, because a failed injection looks like "settings do nothing".
+  ipcMain.on('userscript-loaded', (_event, state) => {
+    userscriptLoadState = { ok: Boolean(state?.ok), message: state?.message };
+    if (!userscriptLoadState.ok) console.error(`[抖音] 内置脚本加载失败：${state?.message}`);
+    scheduleMenuRebuild();
+  });
+  ipcMain.on('userscript-storage-error', (_event, info) => {
+    console.error(`[抖音] 脚本配置${info?.phase === 'read' ? '读取' : '保存'}失败：${info?.message}`);
+  });
+
+  // Userscript GM_* storage. `gm-store-read` is synchronous because the
+  // userscript calls GM_getValue synchronously; writes are fire-and-forget and
+  // persisted immediately by GmStore.
+  ipcMain.on('gm-store-read', (event) => {
+    event.returnValue = { values: userscriptStore.getAll(), initialized: userscriptStore.initialized };
+  });
+  ipcMain.on('gm-store-import', (_event, values) => {
+    userscriptStore.replaceAll(values);
+  });
+  ipcMain.on('gm-store-set', (_event, { key, value, source }) => {
+    const { oldValue } = userscriptStore.set(key, value);
+    broadcastStoreChange({ key, value, oldValue, source });
+  });
+  ipcMain.on('gm-store-delete', (_event, { key, source }) => {
+    const { oldValue } = userscriptStore.delete(key);
+    broadcastStoreChange({ key, oldValue, deleted: true, source });
   });
   ipcMain.handle('gm-http-request', async (_event, options) => {
     try {

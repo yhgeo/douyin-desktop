@@ -7,3 +7,10 @@ dist/
 
 .douyin-*.html
 assets/douyin.ico
+
+# Throwaway self-signed certificate used only by the e2e harness.
+# Regenerated on demand by tools/e2e/run-all.js.
+tools/e2e/certs/
+
+# Local AI-assistant workspace data.
+.workbuddy-ai/
