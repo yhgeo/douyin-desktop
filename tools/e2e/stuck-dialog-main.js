@@ -56,6 +56,45 @@ const HEALTHY_DIALOG = `
   </div>
 </div>`;
 
+// Stuck, but with none of the signals the original detector knew about: no loading
+// class, `pointer-events` left at auto, not `disabled` - only a spinner child. A
+// detection miss here is silent (nothing happens, nothing is logged), so each of
+// these shapes is pinned separately.
+const SPINNER_ONLY_STUCK = `
+<div id="trust-logout-dialog">
+  <div class="trust-login-dialog-mask">
+    <div class="trust-login-dialog-button">
+      <button class="semi-button trust-login-dialog-button-cancel">取消</button>
+      <button class="semi-button trust-login-dialog-button-confirm">
+        <span class="semi-spin"></span><span class="semi-button-content">保存</span>
+      </button>
+    </div>
+  </div>
+</div>`;
+
+// Stuck via the aria flag only.
+const ARIA_DISABLED_STUCK = `
+<div id="trust-logout-dialog">
+  <div class="trust-login-dialog-mask">
+    <div class="trust-login-dialog-button">
+      <button class="semi-button trust-login-dialog-button-cancel" aria-disabled="true">取消</button>
+      <button class="semi-button trust-login-dialog-button-confirm">保存</button>
+    </div>
+  </div>
+</div>`;
+
+// The exact classes the selector looks for are gone, which is what a Douyin rename
+// would look like. The looser fallback has to still find the buttons.
+const RENAMED_BUTTON_STUCK = `
+<div id="trust-logout-dialog">
+  <div class="trust-login-dialog-mask">
+    <div class="trust-login-dialog-button">
+      <button class="semi-button trust-login-dialog-button-dismiss">取消</button>
+      <button class="semi-button trust-login-dialog-button-submit semi-button-loading">保存</button>
+    </div>
+  </div>
+</div>`;
+
 const PAGE = `<!doctype html><html><head><title>douyin</title>
 <script>window.${harness.STUB_MARKER} = true;</script>
 <style>
@@ -66,7 +105,12 @@ const PAGE = `<!doctype html><html><head><title>douyin</title>
 app.whenReady().then(async () => {
   const { received } = harness.installPreloadIpc({});
   const results = [];
+  // Manual recoveries answer on this channel; the automatic watcher announces itself on
+  // a different one. Both are collected, otherwise a watcher recovery would be
+  // indistinguishable from the dialog having closed for some unrelated reason.
+  const watcherRecoveries = [];
   ipcMain.on('stuck-dialog-recovery-result', (_event, result) => { results.push(result); });
+  ipcMain.on('stuck-dialog-recovered', (_event, info) => { watcherRecoveries.push(info); });
 
   const server = await harness.serveDouyinPage(PORT, PAGE);
   const win = new BrowserWindow({
@@ -141,14 +185,47 @@ app.whenReady().then(async () => {
     };
   })()`);
 
-  // The watcher polls every 2s and needs the state sustained for its grace period.
-  await new Promise((resolve) => setTimeout(resolve, 11000));
+  // Wait until the watcher has closed the dialog, and report how long that took.
+  // Polling instead of sleeping a fixed amount keeps the timing assertion honest: a
+  // fixed sleep passes even when the watcher never fired.
+  const waitForDialogGone = async (timeoutMs) => {
+    const started = Date.now();
+    for (let i = 0; i < Math.ceil(timeoutMs / 100); i++) {
+      const gone = await win.webContents.executeJavaScript(
+        `!document.getElementById('trust-logout-dialog')`, true);
+      if (gone) return Date.now() - started;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return null;
+  };
+
+  // Closing must be near-instant, not "eventually": the whole point of the change is
+  // that the user should not be left waiting on a dead page.
+  report.oneButtonElapsedMs = await waitForDialogGone(6000);
   report.afterWatcher = await win.webContents.executeJavaScript(`({
     dialog: Boolean(document.getElementById('trust-logout-dialog')),
     mask: Boolean(document.querySelector('.trust-login-dialog-mask')),
   })`);
-  report.watcherResults = results.slice();
 
+  // 5. Each shape below is stuck in a way the original detector could not see, and a
+  //    detection miss is silent - the dialog simply stays and nothing is logged.
+  const cases = [
+    ['spinnerOnly', SPINNER_ONLY_STUCK],
+    ['ariaDisabled', ARIA_DISABLED_STUCK],
+    ['renamedButtons', RENAMED_BUTTON_STUCK],
+  ];
+  report.detectionCases = {};
+  for (const [name, html] of cases) {
+    await inject(html);
+    const elapsed = await waitForDialogGone(6000);
+    report.detectionCases[name] = {
+      elapsedMs: elapsed,
+      maskGone: await win.webContents.executeJavaScript(
+        `!document.querySelector('.trust-login-dialog-mask')`, true),
+    };
+  }
+
+  report.watcherRecoveries = watcherRecoveries.slice();
   report.consoleErrors = [];
   process.stdout.write(`STUCK_REPORT=${JSON.stringify(report)}\n`);
 

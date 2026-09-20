@@ -304,6 +304,33 @@ process.stdout.write('\n[5/6] stuck login-save dialog recovery\n');
   check('the watcher recovers it without any user action', report?.afterWatcher?.dialog === false,
     JSON.stringify(report?.afterWatcher));
   check('and the mask goes with it', report?.afterWatcher?.mask === false);
+  // Closing has to be near-instant. An earlier build waited 6s on a 2s poll, so up to
+  // 8s passed before anything happened - long enough to read as "the app is broken".
+  check('the dialog is closed almost immediately, not eventually',
+    typeof report?.oneButtonElapsedMs === 'number' && report.oneButtonElapsedMs <= 2500,
+    'elapsedMs=' + String(report?.oneButtonElapsedMs));
+
+  // Each of these is stuck in a way the original detector could not see. A detection
+  // miss is silent, so every signal is pinned separately.
+  const shapes = [
+    ['spinnerOnly', 'a spinner child with no loading class or disabled attribute'],
+    ['ariaDisabled', 'only aria-disabled="true"'],
+    ['renamedButtons', 'the button classes renamed'],
+  ];
+  for (const [key, description] of shapes) {
+    const item = report?.detectionCases?.[key];
+    check('detected when the only signal is ' + description,
+      typeof item?.elapsedMs === 'number', JSON.stringify(item));
+    check('and the mask goes with it (' + key + ')', item?.maskGone === true, JSON.stringify(item));
+  }
+
+  // The watcher has to announce each recovery on its own channel; otherwise a closed
+  // dialog proves nothing about whether the watcher did it.
+  const watcherRecoveries = report?.watcherRecoveries || [];
+  check('the watcher reported all four automatic recoveries', watcherRecoveries.length === 4,
+    'count=' + String(watcherRecoveries.length));
+  check('every watcher recovery succeeded', watcherRecoveries.every((item) => item?.recovered === true),
+    JSON.stringify(watcherRecoveries));
 
   fs.rmSync(userData, { recursive: true, force: true });
 }

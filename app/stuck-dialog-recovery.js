@@ -12,7 +12,7 @@
  *   s() = unmountComponentAtNode(container) + container.remove()
  *
  * `s()` is the only thing that removes the dialog, and on the click path it runs
- * only once that async call settles. When it never settles, the dialog stays, both
+ * only once that async call settles. When it never settles, the dialog stays, the
  * buttons sit in Semi's loading state (which sets `pointer-events: none`), and the
  * full-screen mask keeps swallowing every click - the page is dead until a reload.
  *
@@ -30,12 +30,37 @@
 const DIALOG_ID = 'trust-logout-dialog';
 const BUTTON_SELECTOR = '.trust-login-dialog-button-cancel, .trust-login-dialog-button-confirm';
 
-/** A button is unusable when Semi has put it in its loading state. */
+/**
+ * Douyin has renamed these classes before, and a miss means the dialog is never
+ * detected at all - the failure mode is silent, so a looser fallback is worth it.
+ */
+const BUTTON_FALLBACK_SELECTOR = '[class*="trust-login-dialog-button"]';
+
+/** The dialog's buttons, by exact class first and a looser match second. */
+function findDialogButtons(dialog) {
+  const exact = [...dialog.querySelectorAll(BUTTON_SELECTOR)];
+  if (exact.length > 0) return exact;
+  return [...dialog.querySelectorAll(BUTTON_FALLBACK_SELECTOR)]
+    .filter((node) => node.tagName === 'BUTTON' || node.getAttribute('role') === 'button');
+}
+
+/**
+ * Is this button unusable?
+ *
+ * Semi's loading state sets `pointer-events: none`, which is what the live stuck
+ * dialog showed. A plain `disabled` button is just as unclickable but keeps
+ * `pointer-events: auto`, so every plausible signal is checked - the property, the
+ * attribute, the aria flag, the loading class, and a spinner child. Any one of them
+ * can be the only marker depending on the build, and a miss costs the user the
+ * whole page.
+ */
 function isButtonStuck(button) {
   if (!button) return false;
-  const style = window.getComputedStyle(button);
-  if (style.pointerEvents === 'none') return true;
-  return button.classList.contains('semi-button-loading') || button.hasAttribute('disabled');
+  if (button.disabled) return true;
+  if (button.getAttribute('aria-disabled') === 'true') return true;
+  if (button.classList.contains('semi-button-loading')) return true;
+  if (button.querySelector('.semi-spin, .semi-spinner, [class*="loading"]')) return true;
+  return window.getComputedStyle(button).pointerEvents === 'none';
 }
 
 /**
@@ -55,9 +80,26 @@ function isStuckDialogPresent() {
   const dialog = document.getElementById(DIALOG_ID);
   if (!dialog) return false;
 
-  const buttons = [...dialog.querySelectorAll(BUTTON_SELECTOR)];
+  const buttons = findDialogButtons(dialog);
   if (buttons.length === 0) return false;
   return buttons.some(isButtonStuck);
+}
+
+/** Snapshot of the dialog's shape, for diagnosing a detection miss. */
+function describeDialog(dialog) {
+  const buttons = findDialogButtons(dialog);
+  return {
+    id: dialog.id,
+    buttonCount: buttons.length,
+    buttons: buttons.map((button) => ({
+      cls: button.className,
+      pointerEvents: window.getComputedStyle(button).pointerEvents,
+      disabled: Boolean(button.disabled),
+      ariaDisabled: button.getAttribute('aria-disabled'),
+      loadingClass: button.classList.contains('semi-button-loading'),
+      hasSpinner: Boolean(button.querySelector('.semi-spin, .semi-spinner, [class*="loading"]')),
+    })),
+  };
 }
 
 /** Walk React's fiber tree from the container looking for a prop we can call. */
@@ -119,32 +161,62 @@ function recoverStuckDialog() {
 }
 
 /**
- * Watch for the stuck state and recover it automatically.
+ * Watch for the stuck state and close it as soon as it is confirmed.
  *
- * The grace period is short on purpose. A save really can be in flight, so we do not
- * want to yank the dialog out from under a healthy request - but the request is
- * fire-and-forget, so dismissing the dialog does not cancel it. A few seconds is
- * enough for a normal save, and waiting longer just leaves the user staring at a
- * dead page wondering whether the app is broken.
+ * Closing is immediate - the dialog is gone within a couple of polls of the click
+ * that wedged it. An earlier version waited 6s (on a 2s poll, so up to 8s before
+ * anything happened), which read as "the app is broken" rather than "the app is
+ * helping". Waiting buys nothing: the click's request is fire-and-forget, so
+ * dismissing the dialog does not cancel it, and Douyin's own countdown path closes
+ * the dialog synchronously without waiting for anything either.
+ *
+ * The one concession is that the state must survive two consecutive polls, so a
+ * single-frame re-render is not mistaken for a wedge. At the default 400ms poll that
+ * costs 400ms and bounds the whole thing at roughly 0.8s.
  *
  * @param {object} [options]
- * @param {number} [options.graceMs]
- * @param {(info: object) => void} [options.onRecovered]
  * @param {number} [options.pollMs]
+ * @param {number} [options.graceMs] how long the stuck state must persist
+ * @param {number} [options.diagnoseMs] report a dialog that never looks stuck
+ * @param {(info: object) => void} [options.onRecovered]
+ * @param {(info: object) => void} [options.onDiagnostic]
  * @returns {() => void} detaches
  */
 function installStuckDialogWatch(options = {}) {
-  const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : 6000;
-  const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 2000;
+  const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 400;
+  const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : 400;
+  const diagnoseMs = Number.isFinite(options.diagnoseMs) ? options.diagnoseMs : 9000;
   const onRecovered = typeof options.onRecovered === 'function' ? options.onRecovered : () => {};
+  const onDiagnostic = typeof options.onDiagnostic === 'function' ? options.onDiagnostic : () => {};
 
   let stuckSince = null;
+  let presentSince = null;
+  let diagnosed = false;
 
   const timer = setInterval(() => {
-    if (!isStuckDialogPresent()) {
+    const dialog = document.getElementById(DIALOG_ID);
+
+    if (!dialog) {
       stuckSince = null;
+      presentSince = null;
+      diagnosed = false;
       return;
     }
+
+    if (presentSince === null) presentSince = Date.now();
+
+    if (!isStuckDialogPresent()) {
+      stuckSince = null;
+      // The dialog normally shows for its countdown, so "present but not stuck" is
+      // only worth reporting once it has outlasted any plausible countdown. Without
+      // this a detection miss is invisible: nothing happens and nothing is logged.
+      if (!diagnosed && Date.now() - presentSince >= diagnoseMs) {
+        diagnosed = true;
+        onDiagnostic({ reason: 'dialog present but never detected as stuck', ...describeDialog(dialog) });
+      }
+      return;
+    }
+
     if (stuckSince === null) {
       stuckSince = Date.now();
       return;
@@ -162,7 +234,10 @@ function installStuckDialogWatch(options = {}) {
 
 module.exports = {
   DIALOG_ID,
+  describeDialog,
+  findDialogButtons,
   installStuckDialogWatch,
+  isButtonStuck,
   isStuckDialogPresent,
   recoverStuckDialog,
 };

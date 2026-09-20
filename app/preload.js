@@ -155,6 +155,12 @@ if (isTopFrame) {
         console.warn(`[抖音] 已关闭卡住的弹窗（${info.via}，卡住 ${Math.round(info.stuckMs / 1000)} 秒）`);
         ipcRenderer.send('stuck-dialog-recovered', info);
       },
+      // A dialog that never looks stuck is a detection miss: nothing happens and
+      // nothing is logged, which is impossible to diagnose after the fact. Report the
+      // shape once so a recurrence is visible in the log.
+      onDiagnostic: (info) => {
+        console.warn(`[抖音] 弹窗一直未被判定为卡住：${JSON.stringify(info)}`);
+      },
     });
   });
 
