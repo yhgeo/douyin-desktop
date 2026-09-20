@@ -33,6 +33,19 @@ const STUCK_DIALOG = `
   </div>
 </div>`;
 
+// Only 保存 was clicked. This is the common real-world case: 取消 is still
+// clickable, but clicking also cancelled the countdown, so the async call is the
+// only remaining way out - and it never settles.
+const ONE_BUTTON_STUCK = `
+<div id="trust-logout-dialog">
+  <div class="trust-login-dialog-mask">
+    <div class="trust-login-dialog-button">
+      <button class="semi-button trust-login-dialog-button-cancel">取消</button>
+      <button class="semi-button trust-login-dialog-button-confirm" style="pointer-events: none">保存</button>
+    </div>
+  </div>
+</div>`;
+
 const HEALTHY_DIALOG = `
 <div id="trust-logout-dialog">
   <div class="trust-login-dialog-mask">
@@ -113,6 +126,28 @@ app.whenReady().then(async () => {
   report.afterHealthy = await win.webContents.executeJavaScript(
     `Boolean(document.getElementById('trust-logout-dialog'))`,
   );
+
+  // 4. The watcher must catch a dialog where only one button was clicked. This is
+  //    the case that previously slipped through, because detection required every
+  //    button to be stuck.
+  await inject(ONE_BUTTON_STUCK);
+  report.oneButtonInjected = await win.webContents.executeJavaScript(`(() => {
+    const d = document.getElementById('trust-logout-dialog');
+    const buttons = [...d.querySelectorAll('.trust-login-dialog-button-cancel, .trust-login-dialog-button-confirm')];
+    return {
+      present: Boolean(d),
+      stuckCount: buttons.filter((b) => getComputedStyle(b).pointerEvents === 'none').length,
+      clickableCount: buttons.filter((b) => getComputedStyle(b).pointerEvents !== 'none').length,
+    };
+  })()`);
+
+  // The watcher polls every 2s and needs the state sustained for its grace period.
+  await new Promise((resolve) => setTimeout(resolve, 11000));
+  report.afterWatcher = await win.webContents.executeJavaScript(`({
+    dialog: Boolean(document.getElementById('trust-logout-dialog')),
+    mask: Boolean(document.querySelector('.trust-login-dialog-mask')),
+  })`);
+  report.watcherResults = results.slice();
 
   report.consoleErrors = [];
   process.stdout.write(`STUCK_REPORT=${JSON.stringify(report)}\n`);

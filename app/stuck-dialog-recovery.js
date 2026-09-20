@@ -39,8 +39,17 @@ function isButtonStuck(button) {
 }
 
 /**
- * Is the dialog present but impossible to interact with?
- * That is the state a user can never escape on their own.
+ * Is the dialog present but no longer able to close itself?
+ *
+ * A loading button is the signal: Semi sets `pointer-events: none` while loading,
+ * and - crucially - clicking also runs `clearTimeout(c.current)`, which cancels the
+ * countdown. So before any click the dialog still closes itself, and after a click
+ * the async call is the *only* remaining way out. A button left loading therefore
+ * means "a click happened and the close path is now waiting on that call".
+ *
+ * Any single loading button is enough. Requiring *every* button to be stuck missed
+ * the common case of clicking only 保存, which left the dialog wedged forever with
+ * nothing recovering it.
  */
 function isStuckDialogPresent() {
   const dialog = document.getElementById(DIALOG_ID);
@@ -48,7 +57,7 @@ function isStuckDialogPresent() {
 
   const buttons = [...dialog.querySelectorAll(BUTTON_SELECTOR)];
   if (buttons.length === 0) return false;
-  return buttons.every(isButtonStuck);
+  return buttons.some(isButtonStuck);
 }
 
 /** Walk React's fiber tree from the container looking for a prop we can call. */
@@ -112,9 +121,11 @@ function recoverStuckDialog() {
 /**
  * Watch for the stuck state and recover it automatically.
  *
- * A grace period matters: the button is loading because a save may genuinely be in
- * flight, and yanking the dialog out from under a slow request would be wrong. Only
- * once it has been unusable for `graceMs` do we step in.
+ * The grace period is short on purpose. A save really can be in flight, so we do not
+ * want to yank the dialog out from under a healthy request - but the request is
+ * fire-and-forget, so dismissing the dialog does not cancel it. A few seconds is
+ * enough for a normal save, and waiting longer just leaves the user staring at a
+ * dead page wondering whether the app is broken.
  *
  * @param {object} [options]
  * @param {number} [options.graceMs]
@@ -123,7 +134,7 @@ function recoverStuckDialog() {
  * @returns {() => void} detaches
  */
 function installStuckDialogWatch(options = {}) {
-  const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : 15000;
+  const graceMs = Number.isFinite(options.graceMs) ? options.graceMs : 6000;
   const pollMs = Number.isFinite(options.pollMs) ? options.pollMs : 2000;
   const onRecovered = typeof options.onRecovered === 'function' ? options.onRecovered : () => {};
 

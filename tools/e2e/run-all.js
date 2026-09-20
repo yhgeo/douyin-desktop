@@ -293,6 +293,18 @@ process.stdout.write('\n[5/5] stuck login-save dialog recovery\n');
     JSON.stringify(report?.healthyRecovery));
   check('and it is removed', report?.afterHealthy === false);
 
+  // The case that slipped through before: only one button clicked, so the other is
+  // still clickable - but the click also cancelled the countdown, so it can never
+  // close itself. The watcher has to catch this.
+  check('a dialog with only one clicked button is still detected as stuck',
+    report?.oneButtonInjected?.present === true
+    && report?.oneButtonInjected?.stuckCount === 1
+    && report?.oneButtonInjected?.clickableCount === 1,
+    JSON.stringify(report?.oneButtonInjected));
+  check('the watcher recovers it without any user action', report?.afterWatcher?.dialog === false,
+    JSON.stringify(report?.afterWatcher));
+  check('and the mask goes with it', report?.afterWatcher?.mask === false);
+
   fs.rmSync(userData, { recursive: true, force: true });
 }
 
