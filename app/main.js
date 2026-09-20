@@ -26,6 +26,16 @@ let userscriptLoadState = null;
 app.setName(APP_NAME);
 app.commandLine.appendSwitch('lang', 'zh-CN');
 
+// Chromium throttles timers and requestAnimationFrame for windows it considers
+// occluded or hidden. Douyin's own dialogs close from a state update that this
+// throttling can stall, which leaves the dialog and its mask stuck over the page
+// (see attachResponsivenessHandlers below). `backgroundThrottling: false` on the
+// main window covers that window, but Douyin also opens helper windows of its own
+// - those would still be throttled - so turn it off for every window here.
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+
 function readSettings() {
   try {
     return { scriptEnabled: true, ...JSON.parse(fs.readFileSync(settingsPath, 'utf8')) };
