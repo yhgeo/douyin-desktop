@@ -2,7 +2,12 @@
 //
 // Loads a page on a real `www.douyin.com` origin, applies the production
 // `hardenWebContents` guard, then fires every route a page can use to push a
-// custom scheme (bytedance://, snssdk1128://) or a ByteDance popup at the app.
+// custom scheme (bytedance://, snssdk1128://) or a third-party popup at the app.
+//
+// Two things must hold at once, and they pull in opposite directions:
+//   - no custom scheme may ever reach the OS (that is the Windows dialog), and
+//   - Douyin's own helper windows MUST still open, because its dialogs depend on
+//     them; denying them leaves the dialog's mask stuck over the page.
 //
 // It also passively records which Chromium navigation events fire, which is how
 // we document *why* the old guard leaked: `will-navigate` is main-frame only, so
@@ -31,11 +36,19 @@ const PAGE = `<!doctype html><html><head><title>douyin</title>
 const openExternalCalls = [];
 // Every request the guard refused, with the reason.
 const blocked = [];
+// Every popup the guard deliberately allowed through as an Electron window.
+const allowedPopups = [];
 // Passive event telemetry (which navigation events Chromium actually emits).
 const navigationEvents = [];
 let windowCount = 0;
+const childWindowUrls = [];
 
-app.on('browser-window-created', () => { windowCount += 1; });
+app.on('browser-window-created', (_event, window) => {
+  windowCount += 1;
+  const contents = window.webContents;
+  contents.on('did-finish-load', () => { childWindowUrls.push(contents.getURL()); });
+  contents.on('did-fail-load', (_e, _code, _desc, url) => { childWindowUrls.push(url); });
+});
 
 app.whenReady().then(async () => {
   const server = await harness.serveDouyinPage(PORT, PAGE);
@@ -52,7 +65,10 @@ app.whenReady().then(async () => {
 
   hardenWebContents(win.webContents, {
     openExternal: (url) => openExternalCalls.push(url),
-    onBlocked: (info) => blocked.push(info),
+    onBlocked: (info) => {
+      if (info.reason === 'popup-allowed') allowedPopups.push(info.url);
+      else blocked.push(info);
+    },
     title: '抖音',
   });
 
@@ -110,9 +126,11 @@ app.whenReady().then(async () => {
 
   process.stdout.write(`POPUP_VECTORS=${JSON.stringify(vectors)}\n`);
   process.stdout.write(`POPUP_OPEN_EXTERNAL=${JSON.stringify(openExternalCalls)}\n`);
+  process.stdout.write(`POPUP_ALLOWED=${JSON.stringify(allowedPopups)}\n`);
   process.stdout.write(`POPUP_BLOCKED=${JSON.stringify(blocked)}\n`);
   process.stdout.write(`POPUP_NAV_EVENTS=${JSON.stringify(navigationEvents)}\n`);
   process.stdout.write(`POPUP_WINDOW_COUNT=${windowCount}\n`);
+  process.stdout.write(`POPUP_CHILD_WINDOWS=${JSON.stringify(childWindowUrls)}\n`);
 
   server.close();
   app.quit();

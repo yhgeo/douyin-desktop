@@ -14,9 +14,9 @@ const {
  * an unhandled custom scheme only reaches the OS if *we* hand it over. So every
  * route Chromium can use to escape the renderer is closed here:
  *
- *  - `setWindowOpenHandler` covers `window.open` / `target="_blank"`. Popups are
- *    never turned into Electron windows; ByteDance popups and custom schemes are
- *    dropped outright, and ordinary web links go to the user's browser instead.
+ *  - `setWindowOpenHandler` covers `window.open` / `target="_blank"`. Douyin's
+ *    own helper windows are allowed (its dialogs depend on them), ordinary
+ *    third-party links go to the user's browser, and custom schemes are dropped.
  *  - `will-frame-navigate` covers *every* frame. `will-navigate` alone is
  *    main-frame only, which is how an iframe on douyin.com could still send a
  *    `bytedance://` URL to Windows.
@@ -38,9 +38,19 @@ function hardenWebContents(contents, options = {}) {
   };
 
   contents.setWindowOpenHandler(({ url }) => {
-    const kind = classifyUrl(url).kind;
+    const { kind } = classifyUrl(url);
 
-    if (kind === 'web') {
+    if (kind === 'douyin') {
+      // Douyin's own dialogs (login, verification, share, ...) open helper
+      // windows on its own domain. Denying those leaves the dialog's mask stuck
+      // over the page: clicks stop working until the page is reloaded. They are
+      // allowed, exactly as before, and the new window is hardened too because
+      // `web-contents-created` applies this same policy to it.
+      report('popup-allowed', url);
+      return { action: 'allow' };
+    }
+
+    if (kind === 'web' || kind === 'bytedance-popup') {
       // Ordinary third-party link: hand it to the user's browser rather than
       // spawning an unmanaged Electron window.
       openExternal(url);
@@ -48,8 +58,7 @@ function hardenWebContents(contents, options = {}) {
       return { action: 'deny' };
     }
 
-    // `douyin` / `bytedance-popup` are the stray ByteDance popups; the rest are
-    // custom schemes that must never be forwarded to the OS.
+    // Custom schemes must never be forwarded to the OS.
     report('popup-blocked', url);
     return { action: 'deny' };
   });

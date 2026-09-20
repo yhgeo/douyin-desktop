@@ -97,15 +97,23 @@ process.stdout.write('\n[1/4] popup + custom scheme blocking\n');
 
   const vectors = parse('POPUP_VECTORS=');
   const openExternal = parse('POPUP_OPEN_EXTERNAL=') || [];
+  const allowed = parse('POPUP_ALLOWED=') || [];
   const blocked = parse('POPUP_BLOCKED=') || [];
   const navEvents = parse('POPUP_NAV_EVENTS=') || [];
+  const childWindows = parse('POPUP_CHILD_WINDOWS=') || [];
   const windowCount = Number(read('POPUP_WINDOW_COUNT='));
 
   // Hermeticity: if a proxy or resolver quirk let the request escape to the real
   // douyin.com, every later assertion would be meaningless. Fail loudly instead.
   check('page loaded from the local stub, not the real site', vectors?.__diag?.isLocalStub === true, JSON.stringify(vectors?.__diag));
   check('page loaded and produced results', Boolean(vectors?.popupBytedance));
-  check('no extra Electron windows were created', windowCount === 1, `windowCount=${windowCount}`);
+  // Exactly one extra window: the douyin.com helper window Douyin's dialogs need.
+  check('only the allowed Douyin helper window was created', windowCount === 2, `windowCount=${windowCount}`);
+  check(
+    'the helper window is a douyin.com window, not a third-party one',
+    childWindows.length > 0 && childWindows.every((url) => /douyin\.com/.test(url)),
+    JSON.stringify(childWindows),
+  );
 
   check(
     'no custom scheme was ever handed to the OS',
@@ -126,7 +134,13 @@ process.stdout.write('\n[1/4] popup + custom scheme blocking\n');
   check('window.open(bytedance://) was denied', vectors?.popupBytedance === 'null');
   check('window.open(snssdk1128://) was denied', vectors?.popupSnssdk === 'null');
   check('ByteDance toutiao.com popup was denied', vectors?.popupToutiao === 'null');
-  check('douyin.com popup window was denied', vectors?.popupDouyin === 'null');
+  // Douyin's own dialogs depend on these windows; denying them froze the page.
+  check(
+    'douyin.com helper window was allowed (its dialogs need it)',
+    allowed.includes('https://www.douyin.com/video/1'),
+    JSON.stringify(allowed),
+  );
+  check('the allowed popup is a real window, not a denial', vectors?.popupDouyin !== 'null', String(vectors?.popupDouyin));
   check('<a target="_blank" href="bytedance://"> was denied', blocked.some((item) => item.url.includes('blank-target')));
 
   check('subframe bytedance:// navigation was blocked', vectors?.iframeLocation === 'about:blank', vectors?.iframeLocation);

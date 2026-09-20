@@ -122,11 +122,15 @@ TypeError: Cannot read properties of null (reading 'childNodes')
 
 | 通道 | 处理 |
 | --- | --- |
-| `setWindowOpenHandler` | 一律 `deny`；普通外链交给系统浏览器，字节系弹窗直接丢弃 |
+| `setWindowOpenHandler` | 抖音自身域名的弹窗**放行**（它的登录/验证/分享弹窗依赖这些窗口，拦掉会让弹窗遮罩卡死页面）；普通外链交给系统浏览器；字节系第三方与自定义协议直接丢弃 |
 | `will-frame-navigate` | 覆盖主框架与全部子框架，非 http(s)/about/blob/data 一律拦截 |
 | `will-navigate` / `will-redirect` | 冗余兜底，覆盖服务端重定向 |
 | `will-download` | 取消自定义协议的下载 |
 | `openExternalSafely()` | 应用内唯一调用 `shell.openExternal` 的入口，非 http(s) 直接拒绝 |
+
+> 注意这里的分寸：**拦截的是自定义协议**（`bytedance://` 等交给 Windows Shell 才会弹系统提示），
+> 而不是抖音自己的网页弹窗。把 `*.douyin.com` 的 `window.open` 也一并拦掉，会让抖音的弹窗
+> 拿不到新窗口、遮罩无法关闭，表现为「选完就卡住，只能刷新」。
 
 ## 打包 EXE
 
