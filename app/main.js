@@ -5,6 +5,7 @@ const https = require('node:https');
 const http = require('node:http');
 const { isWebUrl } = require('./url-policy');
 const { hardenWebContents } = require('./web-contents-guard');
+const { attachResponsivenessHandlers } = require('./responsiveness-guard');
 const { GmStore } = require('./gm-store');
 const { buildExportPayload, parseImportPayload, suggestFileName } = require('./config-transfer');
 
@@ -394,45 +395,23 @@ async function createWindow() {
     },
   });
 
-  attachResponsivenessHandlers(mainWindow.webContents);
+  attachFrozenPageRecovery(mainWindow.webContents);
   mainWindow.on('closed', () => { mainWindow = null; });
   await mainWindow.loadURL(HOME_URL);
   mainWindow.setTitle(APP_NAME);
 }
 
 /**
- * Turn a frozen page into a one-click recovery.
+ * Wire the frozen-page recovery to a native prompt.
  *
- * Douyin's own dialogs can leave the page unresponsive: its "是否保存登录信息？"
- * prompt hides itself and *then* runs the caller's confirm/cancel handler, so if
- * that handler blocks, the hide never renders and the dialog's mask keeps
- * swallowing clicks. Waiting out the countdown works because that path never runs
- * the handler at all.
- *
- * The main process keeps running while the renderer is blocked, so Chromium tells
- * us about it and we can offer a reload instead of leaving a dead window that the
- * user has to fix by hand.
+ * Douyin's own dialogs can leave the page unresponsive (the module explains the
+ * full chain), so when the renderer really does block, offer a reload instead of
+ * leaving a dead window behind.
  */
-function attachResponsivenessHandlers(contents) {
-  let prompting = false;
-  let graceTimer = null;
-
-  const clearGrace = () => {
-    clearTimeout(graceTimer);
-    graceTimer = null;
-  };
-
-  contents.on('unresponsive', () => {
-    console.warn('[抖音] 页面无响应');
-    if (prompting) return;
-    // Give it a moment: a long synchronous task is not the same as a dead page,
-    // and a prompt for every hiccup would be worse than the hiccup.
-    clearGrace();
-    graceTimer = setTimeout(() => {
-      graceTimer = null;
-      if (contents.isDestroyed()) return;
-      prompting = true;
-      dialog.showMessageBox(mainWindow, {
+function attachFrozenPageRecovery(contents) {
+  return attachResponsivenessHandlers(contents, {
+    confirmReload: async () => {
+      const result = await dialog.showMessageBox(mainWindow, {
         type: 'warning',
         buttons: ['继续等待', '重新加载页面'],
         defaultId: 1,
@@ -441,22 +420,10 @@ function attachResponsivenessHandlers(contents) {
         title: '页面无响应',
         message: '抖音页面暂时无响应。',
         detail: '这通常是网页自身脚本卡住（例如弹窗按钮的处理逻辑出错）。重新加载页面即可恢复。',
-      }).then((result) => {
-        prompting = false;
-        if (result.response === 1 && mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.reload();
-        }
-      }).catch((error) => {
-        prompting = false;
-        console.error('[抖音] 页面无响应提示失败', error);
       });
-    }, 5000);
-  });
-
-  contents.on('responsive', () => {
-    // Recovered on its own - cancel the pending prompt.
-    clearGrace();
-    if (!prompting) console.info('[抖音] 页面已恢复响应');
+      return result.response === 1;
+    },
+    log: (message, error) => console.error(message, error),
   });
 }
 
