@@ -44,7 +44,7 @@ npm run test:all  # 全部
 端到端测试会：
 1. 用本地 TLS 服务配合 Chromium host resolver 伪造一个真实的 `www.douyin.com` 源
    （`douyin.com` 在 HSTS 预加载列表里，必须走 HTTPS）；
-2. 加载生产环境使用的 `app/preload.js` 与内置脚本；
+2. 加载生产环境使用的 `app/preload/index.js` 与内置脚本；
 3. 重启整个进程验证配置持久化。
 
 > `tools/e2e/certs/` 下的自签证书不纳入版本管理，测试运行时会用 `openssl` 自动生成。
@@ -56,11 +56,62 @@ npm run test:all  # 全部
 > 测试运行器会清掉 `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS`：前者会让 Electron 退化成
 > 普通 Node，导致所有用例以难以理解的方式失败。
 
+## 项目结构
+
+代码按职责分层。`app/main.js` 只是入口，短到能当目录读；每一层的入口文件也都是一次能读完的长度。
+
+```
+app/
+  main.js                    入口：只负责启动
+  main/                      主进程编排
+    lifecycle.js             启动顺序、单实例锁、UA、退出刷盘
+    window.js                主窗口，以及挂在页面上的所有 watcher
+    menu.js                  应用菜单
+    ipc.js                   与页面侧的全部 IPC 通道
+    actions.js               工具菜单里的恢复动作
+    userscript-config.js     脚本配置的导入导出
+    userscript-menu.js       脚本自己注册的菜单项与加载状态
+    broadcast.js             向所有 frame 广播
+  preload/                   页面侧桥接
+    index.js                 入口：判断 frame 类型后分派
+    gm-api.js                GM_* API 实现
+    inject.js                注入 vendor 依赖与用户脚本
+  recovery/                  一类问题一个模块
+    blank-page.js            服务器不给页面（黑屏）
+    stuck-dialog.js          弹窗点不动
+    responsiveness.js        渲染进程真卡住
+  platform/                  Chromium/Electron 平台层
+    script-meta.js           主进程与 preload 共用的名称（不依赖 electron）
+    constants.js             路径等（主进程专用）
+    dom-ready.js             等 <html> 出现再注入
+    url-policy.js            哪些 URL 能交给系统
+    web-contents-guard.js    跳转与弹窗策略
+    external-links.js        唯一允许调 shell.openExternal 的地方
+    http.js                  GM_xmlhttpRequest 的实现
+  storage/                   持久化
+    settings.js              应用设置
+    userscript-store.js      GM 值存储实例
+    gm-store.js              存储实现
+    config-transfer.js       备份格式与校验
+  diagnostics/               诊断
+    logger.js                应用日志实例
+    log-file.js              轮转文件
+    page-diagnostics.js      页面事件采集与去重
+```
+
+几条约定：
+
+- **`platform/script-meta.js` 不能 require electron。** preload 跑在渲染进程里，`app` 不存在；
+  而脚本名/版本主进程和 preload 都要用，所以放在这个不依赖 electron 的模块里。
+- **依赖方向单向**：`main/` 依赖 `recovery|storage|platform|diagnostics`，反向不成立。
+  `userscript-menu.js` 通过注入 builder 的方式拿到 `menu.js`，避免两者成环。
+- **想找某个行为在哪**：先看 `app/main.js` 的目录，再进对应模块。
+
 ## 实现说明
 
 ### 配置导入导出
 
-菜单里的「导出配置到文件 / 从文件导入配置」由 `app/config-transfer.js`（格式与校验）
+菜单里的「导出配置到文件 / 从文件导入配置」由 `app/storage/config-transfer.js`（格式与校验）
 配合主进程的系统文件对话框完成：
 
 ```json
@@ -89,7 +140,7 @@ npm run test:all  # 全部
 - 此时按钮已经进入 Semi 的 loading 态（`pointer-events: none`），整个遮罩罩住页面，
   用户除了刷新别无他法。
 
-`app/stuck-dialog-recovery.js` 的处理方式是**复用抖音自己的同步清理**：从弹窗容器的
+`app/recovery/stuck-dialog.js` 的处理方式是**复用抖音自己的同步清理**：从弹窗容器的
 `__reactContainer$xxx` 沿 React fiber 树找到组件的 `defaultHandler` prop 并调用它 ——
 也就是倒计时按钮走的那条路径。只有找不到该 prop 时才兜底移除容器节点。
 
@@ -227,6 +278,33 @@ Chromium 错误页是有 body 内容的，所以离线不会触发这套清理�
 - **退出时刷盘**：`before-quit` 里调用 `flushStorageData()` 与 `cookies.flushStore()`，
   减少非正常退出留下的半写状态。
 
+### 几种运行方式的区别
+
+| 方式 | 程序来自 | userData | 说明 |
+| --- | --- | --- | --- |
+| `npm start` | 仓库里的 `node_modules/electron` + 源码 | `AppData\Roaming\douyin-desktop` | 开发用，改完代码重启即生效 |
+| 便携版 `抖音 x.y.z.exe` | 自解压到 `%TEMP%` 后运行 | 同上 | 绿色，不用安装 |
+| 安装版（`抖音 Setup`） | 装到 `%LOCALAPPDATA%\Programs\抖音` | 同上 | 有开始菜单与桌面快捷方式 |
+
+**三者共用同一个 profile。** `userData` 由 package.json 的 `name`（`douyin-desktop`）决定，与
+构建方式无关 —— 这样登录态和脚本配置才能在它们之间延续。代价是**不能同时运行两个**：Chromium 的
+profile 是 LevelDB，不支持多进程写入，两个一起写会把它写坏（上面那个黑屏就是这么来的）。
+
+所以 0.1.5 起加了单实例锁：第二个实例立刻退出，并把已有窗口唤到最前面，日志里也会写明。启动日志还会
+记录这次跑的是哪一种（`mode` / `portable` / `execPath`），不确定时看 **工具 → 打开运行日志** 的第一行。
+
+> 单实例锁只能约束**带锁的版本**。早期构建（没有锁）仍可能与新版本同时启动，所以不要同时留着旧副本。
+
+### 便携版会把文件解压到哪里
+
+解压到 `%TEMP%\<名字>`，**不能**放到 exe 旁边 —— electron-builder 的 `portable` 目标就是这样实现的，
+它的类型定义写得很直白：`unpackDirName` 是「the name in TEMP directory」，默认值是**每次构建都变的
+ksuid**。所以 `C:\Users\<你>\AppData\Local\Temp\<随机串>\` 是它留下的，而 `D:\tmp` 不是
+（那是别的程序留下的）。
+
+想要「真正放在 exe 旁边、什么都不解压」的绿色版，用构建产物里的 **`win-unpacked/`** 目录：整个文件夹
+可以放到任何位置，直接运行里面的 `抖音.exe`，不会往 `%TEMP%` 写任何东西。
+
 ### User-Agent
 
 Electron 会把 `<productName>/<version>` 拼进 UA，而这个 app 叫「抖音」，所以它在对外宣称自己是
@@ -273,7 +351,7 @@ npm start -- --in-process-gpu
 
 ### 脚本配置存放位置
 
-脚本的 GM 值由**主进程**持有（`app/gm-store.js`，落盘到 `userData/userscript-config.json`），
+脚本的 GM 值由**主进程**持有（`app/storage/gm-store.js`，落盘到 `userData/userscript-config.json`），
 不再放在网页的 `localStorage` 里。原因：
 
 - 放在站点存储里时，`clearStorageData()` 会把脚本配置一起清掉，两个「清除」操作无法分开；
@@ -305,14 +383,14 @@ TypeError: Cannot read properties of null (reading 'childNodes')
 优化逻辑全部不生效，而更早注册的菜单命令仍然可用 —— 所以配置界面能正常打开、也能保存，
 但设置永远不生效。
 
-`app/dom-ready.js` 因此等待解析器插入 `<html>` 后再注入。该时机仍在页面自身脚本之前
+`app/platform/dom-ready.js` 因此等待解析器插入 `<html>` 后再注入。该时机仍在页面自身脚本之前
 （测试断言 `pageScriptsRanAtInject === 0`），保留 `document-start` 语义。
 
 ### 为什么用 `will-frame-navigate` 而不只是 `will-navigate`
 
 `will-navigate` **只对主框架触发**。抖音页面大量使用 iframe，子框架里的
 `bytedance://` 跳转不会被 `will-navigate` 捕获，最终交给 Windows Shell 处理，从而弹出
-“需要新应用以打开此链接”。`app/url-policy.js` + `app/web-contents-guard.js` 统一收口：
+“需要新应用以打开此链接”。`app/platform/url-policy.js` + `app/platform/web-contents-guard.js` 统一收口：
 
 | 通道 | 处理 |
 | --- | --- |

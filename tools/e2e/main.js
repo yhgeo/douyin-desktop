@@ -1,4 +1,4 @@
-// End-to-end harness for the real app/preload.js.
+// End-to-end harness for the real app/preload/index.js.
 //
 // Loads the production preload against a genuine `www.douyin.com` origin, then
 // restarts the whole process to check whether the userscript's settings survived.
@@ -10,7 +10,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 
 const harness = require('./harness');
-const { GmStore } = require('../../app/gm-store');
+const { GmStore } = require('../../app/storage/gm-store');
 
 const PORT = 45999;
 const arg = (name) => {
@@ -24,7 +24,7 @@ const phase = arg('e2e-phase') || 'write';
 
 harness.applyHarnessSwitches(PORT);
 
-const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload.js');
+const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload', 'index.js');
 
 app.whenReady().then(async () => {
   // Use the production store so persistence is genuinely exercised; the two

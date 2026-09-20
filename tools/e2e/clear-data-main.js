@@ -3,14 +3,14 @@
 //   「清除抖音网页数据」 -> cookies / cache / site storage, script config KEPT
 //   「清除脚本配置数据」 -> script config only, site data KEPT
 //
-// It drives the real app/preload.js against a real www.douyin.com origin and uses
+// It drives the real app/preload/index.js against a real www.douyin.com origin and uses
 // the production GmStore, then performs exactly the two operations the menu
 // items perform and checks what each one actually destroys.
 const { app, BrowserWindow, session } = require('electron');
 const path = require('node:path');
 
 const harness = require('./harness');
-const { GmStore } = require('../../app/gm-store');
+const { GmStore } = require('../../app/storage/gm-store');
 
 const PORT = 45994;
 const userDataArg = process.argv.find((item) => item.startsWith('--e2e-user-data='));
@@ -18,7 +18,7 @@ if (userDataArg) app.setPath('userData', userDataArg.slice('--e2e-user-data='.le
 
 harness.applyHarnessSwitches(PORT);
 
-const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload.js');
+const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload', 'index.js');
 
 app.whenReady().then(async () => {
   const store = new GmStore(path.join(app.getPath('userData'), 'userscript-config.json'));

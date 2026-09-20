@@ -3,7 +3,7 @@
 // Chromium's HSTS preload list upgrades `douyin.com` to HTTPS, so every harness
 // serves a throwaway page over TLS on a mapped `www.douyin.com` origin. This
 // module owns the TLS server, the certificate, and an IPC surface that mirrors
-// what app/main.js provides to app/preload.js, so the tests exercise the real
+// what app/main.js provides to app/preload/index.js, so the tests exercise the real
 // preload instead of a reimplementation of it.
 'use strict';
 
@@ -101,7 +101,7 @@ function parseLine(stdout, prefix) {
 }
 
 /**
- * Mirror the IPC surface app/main.js exposes to app/preload.js.
+ * Mirror the IPC surface app/main.js exposes to app/preload/index.js.
  *
  * @param {object} [options]
  * @param {{ getAll: Function, initialized: boolean, set: Function, delete: Function,

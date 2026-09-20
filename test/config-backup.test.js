@@ -11,8 +11,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { GmStore } = require('../app/gm-store');
-const { buildExportPayload, parseImportPayload } = require('../app/config-transfer');
+const { GmStore } = require('../app/storage/gm-store');
+const { buildExportPayload, parseImportPayload } = require('../app/storage/config-transfer');
 
 function tempStore(name) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `douyin-backup-${name}-`));

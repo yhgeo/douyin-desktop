@@ -10,7 +10,7 @@ const {
   isDouyinHost,
   isSafeNavigationUrl,
   isWebUrl,
-} = require('../app/url-policy');
+} = require('../app/platform/url-policy');
 
 test('isWebUrl accepts only http and https', () => {
   assert.equal(isWebUrl('https://www.douyin.com/'), true);

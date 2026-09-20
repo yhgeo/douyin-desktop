@@ -18,7 +18,7 @@ const { app, BrowserWindow } = require('electron');
 const path = require('node:path');
 
 const harness = require('./harness');
-const { hardenWebContents } = require('../../app/web-contents-guard');
+const { hardenWebContents } = require('../../app/platform/web-contents-guard');
 
 const PORT = 45996;
 

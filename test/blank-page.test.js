@@ -18,7 +18,8 @@ const {
   backoffForRound,
   clearAntiCrawlCookies,
   isBlankDocument,
-} = require('../app/blank-page-recovery');
+  withTimeout,
+} = require('../app/recovery/blank-page');
 
 test('a document with no content and no scripts counts as blank', () => {
   assert.equal(isBlankDocument({ readyState: 'complete', bodyChildren: 0, scripts: 0 }), true);
@@ -234,4 +235,59 @@ test('the watcher escalates rung by rung and reports its progress', async () => 
   await settle();
   assert.equal(statuses.at(-1).phase, 'healthy');
   assert.equal(page.reloads, 3, 'a healthy page must not be reloaded again');
+});
+
+// ---------------------------------------------------------------------------
+// A repair that stalls is worse than one that fails.
+//
+// Found on a real run: `session.cookies.get()` goes through Chromium's network service,
+// and when that service crashed the promise never settled - which hung the whole ladder
+// mid-round and left the window black with a repair stuck on an await.
+// ---------------------------------------------------------------------------
+
+test('withTimeout resolves to the fallback instead of hanging', async () => {
+  const never = new Promise(() => {});
+  assert.equal(await withTimeout(never, 20, 'fallback'), 'fallback');
+  assert.equal(await withTimeout(Promise.resolve('ok'), 50, 'fallback'), 'ok');
+});
+
+test('a hanging cookie read is skipped, not waited on', async () => {
+  const session = {
+    cookies: { get: () => new Promise(() => {}), remove: async () => {} },
+  };
+  const started = Date.now();
+  const removed = await clearAntiCrawlCookies(session, 'https://www.douyin.com', 20);
+  assert.deepEqual(removed, []);
+  assert.ok(Date.now() - started < 1000, 'must not wait for the real timeout');
+});
+
+test('a hanging cookie step still lets the rung clear storage and reload', async () => {
+  const cleared = [];
+  const session = {
+    clearStorageData: async (options) => { cleared.push(options); },
+    clearCache: async () => {},
+    cookies: { get: () => new Promise(() => {}), remove: async () => {} },
+  };
+
+  const applied = await applyLadderStep(session, 'https://www.douyin.com', 2);
+
+  assert.deepEqual(applied.actions, ['storage', 'anti-crawl-cookies']);
+  assert.deepEqual(applied.removedCookies, []);
+  assert.equal(cleared.length, 1, 'storage must still be cleared');
+});
+
+test('one failing action does not skip the rest of the rung', async () => {
+  const cleared = [];
+  const session = {
+    clearStorageData: async (options) => { cleared.push(options); },
+    clearCache: async () => { throw new Error('cache unavailable'); },
+    cookies: { get: async () => [], remove: async () => {} },
+  };
+
+  const applied = await applyLadderStep(session, 'https://www.douyin.com', 3);
+
+  assert.deepEqual(applied.actions, ['storage', 'anti-crawl-cookies', 'http-cache']);
+  assert.equal(cleared.length, 1, 'the earlier actions still ran');
+  assert.equal(applied.failed.length, 1);
+  assert.equal(applied.failed[0].action, 'http-cache');
 });

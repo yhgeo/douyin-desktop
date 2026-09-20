@@ -9,7 +9,7 @@ const {
   buildExportPayload,
   parseImportPayload,
   suggestFileName,
-} = require('../app/config-transfer');
+} = require('../app/storage/config-transfer');
 
 const SAMPLE = {
   GM_Panel: { panel: { 'douyin-optimization': { enable: true } } },

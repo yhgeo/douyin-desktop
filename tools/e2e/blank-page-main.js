@@ -12,7 +12,7 @@
 const { app, BrowserWindow, session } = require('electron');
 
 const harness = require('./harness');
-const { attachBlankPageRecovery } = require('../../app/blank-page-recovery');
+const { attachBlankPageRecovery } = require('../../app/recovery/blank-page');
 
 const PORT = 45996;
 const userDataArg = process.argv.find((item) => item.startsWith('--e2e-user-data='));
@@ -124,9 +124,15 @@ app.whenReady().then(async () => {
     probeKeyAfter: localStorage.getItem('e2e-probe'),
   })`, true).catch((error) => ({ error: String(error.message) }));
 
-  report.cookiesAfter = (await session.defaultSession.cookies.get({ url: 'http://www.douyin.com/' }))
-    .map((cookie) => cookie.name)
-    .sort();
+  // Bounded on purpose: a cookie read goes through Chromium's network service, and if
+  // that service is down the promise never settles - a test that hangs reports nothing,
+  // which is worse than a test that fails.
+  report.cookiesAfter = await Promise.race([
+    session.defaultSession.cookies.get({ url: 'http://www.douyin.com/' })
+      .then((cookies) => cookies.map((cookie) => cookie.name).sort())
+      .catch(() => null),
+    sleep(3000).then(() => null),
+  ]);
 
   // A healthy page must not be repaired again.
   const requestsAfterRepair = report.documentRequests;

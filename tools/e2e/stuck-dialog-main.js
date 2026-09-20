@@ -18,7 +18,7 @@ if (userDataArg) app.setPath('userData', userDataArg.slice('--e2e-user-data='.le
 
 harness.applyHarnessSwitches(PORT);
 
-const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload.js');
+const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload', 'index.js');
 
 const STUCK_DIALOG = `
 <div id="trust-logout-dialog">

@@ -83,6 +83,26 @@ const SETTLE_MS = 700;
 /** Enough scripts to be sure a real Douyin page rendered, not the challenge page. */
 const REAL_PAGE_SCRIPTS = 5;
 
+/**
+ * A repair that stalls is worse than one that fails.
+ *
+ * Found the hard way: `session.cookies.get()` goes through Chromium's network service,
+ * and when that service crashes the promise simply never settles - which hung the whole
+ * ladder mid-round. A black window that is still being retried is recoverable; one whose
+ * repair is stuck on an await is not. So every step that talks to another process is
+ * bounded.
+ */
+const COOKIE_TIMEOUT_MS = 2000;
+const STEP_TIMEOUT_MS = 8000;
+
+/** Resolve to `onTimeout` instead of hanging. */
+function withTimeout(promise, ms, onTimeout) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => { setTimeout(() => resolve(onTimeout), ms); }),
+  ]);
+}
+
 /** Waits used once the escalation ladder is exhausted, in order. */
 const BACKOFF_MS = [10000, 30000, 60000, 120000];
 
@@ -135,13 +155,24 @@ async function clearDouyinSiteStorage(targetSession, origin = DOUYIN_ORIGIN) {
  *
  * @returns {Promise<string[]>} the cookie names actually removed
  */
-async function clearAntiCrawlCookies(targetSession, origin = DOUYIN_ORIGIN) {
-  const cookies = await targetSession.cookies.get({ url: origin });
+async function clearAntiCrawlCookies(targetSession, origin = DOUYIN_ORIGIN, timeoutMs = COOKIE_TIMEOUT_MS) {
+  let cookies;
+  try {
+    cookies = await withTimeout(targetSession.cookies.get({ url: origin }), timeoutMs, null);
+  } catch {
+    cookies = null;
+  }
+  if (!cookies) {
+    // The network service is unavailable. Skip the step rather than stall the ladder;
+    // the next round tries again.
+    return [];
+  }
+
   const doomed = cookies.filter((cookie) => String(cookie.name).startsWith(ANTI_CRAWL_COOKIE_PREFIX));
   const removed = [];
   for (const cookie of doomed) {
     try {
-      await targetSession.cookies.remove(origin, cookie.name);
+      await withTimeout(targetSession.cookies.remove(origin, cookie.name), timeoutMs, null);
       removed.push(cookie.name);
     } catch {
       // A cookie can disappear between the read and the remove; not worth failing over.
@@ -153,20 +184,29 @@ async function clearAntiCrawlCookies(targetSession, origin = DOUYIN_ORIGIN) {
 /**
  * Apply one rung of the ladder.
  *
- * @returns {Promise<{ actions: string[], removedCookies: string[] }>}
+ * Each action is isolated: one of them failing must not skip the reload, because the
+ * reload is what turns "we changed something" into "the page gets another chance". The
+ * next round will try the failed action again.
+ *
+ * @returns {Promise<{ actions: string[], removedCookies: string[], failed: object[] }>}
  */
 async function applyLadderStep(targetSession, origin, round) {
   const index = Math.min(Math.max(round, 1), LADDER.length) - 1;
   const { actions } = LADDER[index];
   const removedCookies = [];
+  const failed = [];
 
   for (const action of actions) {
-    if (action === 'storage') await clearDouyinSiteStorage(targetSession, origin);
-    else if (action === 'anti-crawl-cookies') removedCookies.push(...await clearAntiCrawlCookies(targetSession, origin));
-    else if (action === 'http-cache') await targetSession.clearCache();
+    try {
+      if (action === 'storage') await clearDouyinSiteStorage(targetSession, origin);
+      else if (action === 'anti-crawl-cookies') removedCookies.push(...await clearAntiCrawlCookies(targetSession, origin));
+      else if (action === 'http-cache') await targetSession.clearCache();
+    } catch (error) {
+      failed.push({ action, error: String((error && error.message) || error) });
+    }
   }
 
-  return { actions, removedCookies };
+  return { actions, removedCookies, failed };
 }
 
 /** How long to wait before retrying, given the round number. */
@@ -223,7 +263,13 @@ function attachBlankPageRecovery(contents, options = {}) {
   const repair = async (round) => {
     let applied = { actions: [], removedCookies: [] };
     try {
-      applied = await applyLadderStep(targetSession, origin, round);
+      // Backstop for anything inside the step that talks to another process: if it never
+      // answers, keep climbing rather than waiting forever on a black window.
+      applied = await withTimeout(
+        applyLadderStep(targetSession, origin, round),
+        STEP_TIMEOUT_MS,
+        { actions: [], removedCookies: [], timedOut: true },
+      );
     } catch (error) {
       log('error', '清除站点数据失败', { round, error: String((error && error.message) || error) });
       onRecovered({ round, failed: String((error && error.message) || error) });
@@ -295,10 +341,12 @@ function attachBlankPageRecovery(contents, options = {}) {
 module.exports = {
   ANTI_CRAWL_COOKIE_PREFIX,
   BACKOFF_MS,
+  COOKIE_TIMEOUT_MS,
   DOUYIN_ORIGIN,
   LADDER,
   PROBE,
   SETTLE_MS,
+  STEP_TIMEOUT_MS,
   STORAGES,
   applyLadderStep,
   attachBlankPageRecovery,
@@ -306,4 +354,5 @@ module.exports = {
   clearAntiCrawlCookies,
   clearDouyinSiteStorage,
   isBlankDocument,
+  withTimeout,
 };

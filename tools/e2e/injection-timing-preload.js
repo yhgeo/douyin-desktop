@@ -9,7 +9,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { whenDocumentElementAvailable } = require('../../app/dom-ready');
+const { whenDocumentElementAvailable } = require('../../app/platform/dom-ready');
 
 const root = path.join(__dirname, '..', '..');
 const USERSCRIPT = 'assets/douyin-optimization.user.js';

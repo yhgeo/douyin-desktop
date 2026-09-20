@@ -16,7 +16,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-const { attachPageDiagnostics, createLogFile, normalizeForDedupe } = require('../app/diagnostics');
+const { createLogFile } = require('../app/diagnostics/log-file');
+const { attachPageDiagnostics, normalizeForDedupe } = require('../app/diagnostics/page-diagnostics');
 
 function tempDir(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `dy-log-${name}-`));

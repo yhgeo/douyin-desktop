@@ -26,7 +26,7 @@ if (proxyArg) {
 const userDataArg = process.argv.find((item) => item.startsWith('--real-user-data='));
 if (userDataArg) app.setPath('userData', userDataArg.slice('--real-user-data='.length));
 
-const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload.js');
+const PRELOAD = path.join(__dirname, '..', '..', 'app', 'preload', 'index.js');
 
 const userscriptLoadStates = [];
 const storageErrors = [];
