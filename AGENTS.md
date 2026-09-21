@@ -486,4 +486,19 @@ npm run dist
 > 注意：`ELECTRON_BUILDER_BINARIES_MIRROR` 会改变 NSIS 工具链的缓存 key，触发重新下载。
 > 如果本机已经缓存过原始来源的 NSIS 工具链，就不要再设这个变量，否则容易在
 > `rename '*.tmp' -> '*'` 上撞到 Windows 的 EPERM（杀毒软件/瞬时占用）。
-> 真遇到 EPERM 时，把 `dist/` 移开再重跑即可。
+
+### 构建前先清空 `dist/`（0.2.0）
+
+`npm run dist` 现在会先执行 `predist` → `tools/build/clean-dist.js`，删掉上一次的 `dist/`。
+
+原因：electron-builder **无法替换**已存在的 `dist/win-unpacked` —— 它先写 `win-unpacked.tmp`
+再改名覆盖，而 Windows 在旧目录还在时拒绝这次改名（EPERM）。以前的绕过办法是**手动把 `dist` 移开**，
+代价是每次构建都留下一个约 470 MB 的 `dist.prev.<时间戳>`，于是越积越多（本机曾积到 9 个、474 MB）。
+
+改成先删再建后，两个问题一起消失。删不掉时会**明确失败并说明原因**（通常是便携版还在跑、占着
+`dist` 里的文件），而不是留下半删状态的 `dist` 让 electron-builder 报出难懂的错。
+
+历史遗留目录（`dist.prev.*` / `dist.stale.*` / `dist-<版本>`）用 `npm run clean:stale` 清理：
+它逐目录报告，并**点名**是哪个文件被别的进程打开着 —— Windows 不允许删除已打开的文件，
+这与文件权限无关，所以不点名的话「另一个程序正在使用此文件」完全没法排查。
+这类文件每个约 1 MB、已被 `.gitignore` 忽略，删不掉也不影响使用。
