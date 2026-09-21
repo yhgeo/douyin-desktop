@@ -15,6 +15,11 @@ const { broadcast } = require('./broadcast');
 const { clearCommands, resetLoadState, scheduleMenuRebuild } = require('./userscript-menu');
 const { userscriptStore } = require('../storage/userscript-store');
 const {
+  ANTI_CRAWL_COOKIE_REMOVAL,
+  isAntiCrawlCookieRemovalOn,
+  withoutAntiCrawlCookieRemoval,
+} = require('../storage/harmful-settings');
+const {
   DOUYIN_ORIGIN,
   LADDER,
   PROBE: BLANK_PAGE_PROBE,
@@ -112,9 +117,57 @@ function clearUserscriptData() {
   getMainWindow()?.webContents.reload();
 }
 
+/**
+ * Turn off the one script setting known to break this app.
+ *
+ * A menu action rather than a silent fix. The switch belongs to the user and rewriting their
+ * configuration without asking is not this app's business - but neither is leaving them to
+ * rediscover it from the README while staring at a black window, which is exactly what
+ * happened. See storage/harmful-settings.js for what the setting does and how it was pinned
+ * down.
+ *
+ * The change is broadcast rather than left for the next launch: the page side caches the
+ * store, so without the broadcast the switch would look like it had no effect until a restart.
+ */
+async function disableAntiCrawlCookieRemoval() {
+  const window = getMainWindow();
+  const values = userscriptStore.getAll();
+
+  if (!isAntiCrawlCookieRemovalOn(values)) {
+    if (window) {
+      await dialog.showMessageBox(window, {
+        type: 'info',
+        noLink: true,
+        buttons: ['好'],
+        title: '无需处理',
+        message: '「移除某些Cookie」本来就是关闭的。',
+      });
+    }
+    return;
+  }
+
+  userscriptStore.replaceAll(withoutAntiCrawlCookieRemoval(values));
+  broadcast('gm-store-replaced', userscriptStore.getAll());
+  log.warn('已关闭「移除某些Cookie」', { setting: ANTI_CRAWL_COOKIE_REMOVAL });
+
+  if (!window) return;
+  const { response } = await dialog.showMessageBox(window, {
+    type: 'info',
+    noLink: true,
+    buttons: ['重新加载页面', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+    title: '已关闭「移除某些Cookie」',
+    message: '这个开关会删除抖音的反爬签名 cookie，是页面加载为空（黑屏）的已知原因。',
+    detail: '已经关掉了。重新加载页面让它立即生效；页面本身已经是好的就不用管。',
+  });
+  if (response === 0) window.webContents.reloadIgnoringCache();
+}
+
 module.exports = {
   clearDouyinSiteData,
   clearUserscriptData,
+  disableAntiCrawlCookieRemoval,
   repairUnloadablePage,
   requestStuckDialogRecovery,
   settleStuckDialogRecovery,

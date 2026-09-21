@@ -26,6 +26,7 @@ const { getMainWindow } = require('./window');
 const {
   clearDouyinSiteData,
   clearUserscriptData,
+  disableAntiCrawlCookieRemoval,
   repairUnloadablePage,
   requestStuckDialogRecovery,
 } = require('./actions');
@@ -103,6 +104,10 @@ function buildToolSubmenu() {
     },
     { label: '关闭卡住的弹窗', click: () => requestStuckDialogRecovery() },
     { label: '修复无法加载的页面', click: () => repairUnloadablePage() },
+    // Named for the symptom the user has, not for the setting: "移除某些Cookie" is a switch in
+    // the script's own panel, and someone looking at a black window would never guess that is
+    // where the cause is.
+    { label: '关闭「移除某些Cookie」（黑屏的已知原因）', click: () => disableAntiCrawlCookieRemoval() },
     { label: '打开运行日志', click: () => { shell.openPath(log.path).catch(() => {}); } },
     { type: 'separator' },
     { label: '清除抖音网页数据', click: () => clearDouyinSiteData() },

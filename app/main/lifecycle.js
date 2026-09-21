@@ -17,6 +17,11 @@ const { registerIpcHandlers } = require('./ipc');
 const { buildMenu } = require('./menu');
 const { createWindow, getMainWindow } = require('./window');
 const { titleFor } = require('./title-state');
+const { userscriptStore } = require('../storage/userscript-store');
+const {
+  ANTI_CRAWL_COOKIE_REMOVAL,
+  isAntiCrawlCookieRemovalOn,
+} = require('../storage/harmful-settings');
 
 /**
  * Milliseconds since the JavaScript environment started, at the moment this module was loaded.
@@ -189,6 +194,8 @@ async function start() {
     ...describeRunMode(),
   });
 
+  warnAboutKnownHarmfulSettings();
+
   registerIpcHandlers();
   buildMenu();
   await createWindow();
@@ -199,6 +206,31 @@ async function start() {
     totalMs: Math.round(process.uptime() * 1000),
     windowMs: Math.round(process.uptime() * 1000) - MODULE_LOAD_MS,
   });
+}
+
+/**
+ * Say out loud when a setting known to break this app is on.
+ *
+ * Not a guess and not a precaution: a profile that failed on *every* launch loaded normally as
+ * soon as this one flag was turned off, same machine, same build. What made it expensive is
+ * that the failure is indistinguishable from the server refusing to serve the page - empty
+ * body, no scripts, no console output - so the obvious conclusion is "the server is blocking
+ * me", which the user can disprove in Edge and then have nowhere to go.
+ *
+ * One line at startup is the difference between a five-minute diagnosis and an afternoon.
+ * The setting is not rewritten: it is the user's, and the menu action exists to turn it off.
+ */
+function warnAboutKnownHarmfulSettings() {
+  try {
+    if (!isAntiCrawlCookieRemovalOn(userscriptStore.getAll())) return;
+    log.warn('「移除某些Cookie」已开启，它会删除反爬签名 cookie，是页面加载为空（黑屏）的已知原因', {
+      setting: ANTI_CRAWL_COOKIE_REMOVAL,
+      fix: '工具 → 关闭「移除某些Cookie」',
+    });
+  } catch (error) {
+    // A settings check must never be the reason a launch fails.
+    log.warn('无法检查脚本设置', { error: String((error && error.message) || error) });
+  }
 }
 
 module.exports = { browserUserAgent, describeRunMode, start };
