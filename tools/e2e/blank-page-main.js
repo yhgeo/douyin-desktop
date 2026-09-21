@@ -105,6 +105,11 @@ app.whenReady().then(async () => {
     }),
   });
 
+  // Everything below waits on renderer round-trips. When Chromium's network service dies,
+  // one of them simply never settles - which hung this test for three minutes and reported
+  // nothing at all. A test that hangs is worse than one that fails, so the whole tail is
+  // bounded and the report is printed either way.
+  const tail = (async () => {
   await win.loadURL('http://www.douyin.com/').catch((error) => { report.loadError = String(error.message); });
 
   // Wait for the repaired page rather than a fixed sleep, so the test is not timing
@@ -138,6 +143,14 @@ app.whenReady().then(async () => {
   const requestsAfterRepair = report.documentRequests;
   await sleep(2500);
   report.extraRequestsAfterHealthyLoad = report.documentRequests - requestsAfterRepair;
+  })();
+
+  await Promise.race([
+    tail,
+    sleep(60000).then(() => {
+      report.environmentError = 'renderer stopped answering after 60s (Chromium network service down?)';
+    }),
+  ]);
 
   process.stdout.write(`BLANK_REPORT=${JSON.stringify(report)}\n`);
 

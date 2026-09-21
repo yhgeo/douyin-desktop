@@ -343,6 +343,13 @@ process.stdout.write('\n[6/6] blank page recovery (Douyin refuses to serve the d
   const { read } = runElectron('blank-page-main.js', [`--e2e-user-data=${userData}`]);
   const report = JSON.parse(read('BLANK_REPORT=') || 'null');
 
+  // Say why, when it is the environment rather than the code: a Chromium network-service
+  // crash stops renderer round-trips from settling, and the checks below then all fail on
+  // a missing report. Without this line that reads as seventeen unrelated regressions.
+  if (report?.environmentError) {
+    process.stdout.write(`  note: the environment blocked this section - ${report.environmentError}\n`);
+  }
+
   check('page loaded from the local stub, not the real site', report?.final?.isLocalStub === true);
   // The stub only serves a real page once storage has been cleared, so reaching it
   // proves the recovery ran rather than the page having loaded by itself.

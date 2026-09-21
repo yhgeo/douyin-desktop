@@ -19,6 +19,22 @@ function tempStore(name) {
   return { dir, file: path.join(dir, 'userscript-config.json') };
 }
 
+
+/**
+ * Remove a test's temp directory, tolerating a failure to do so.
+ *
+ * Cleanup says nothing about the code under test. In a sandboxed environment the delete can
+ * be refused outright - a safe-delete shim failing with `ENOTEMPTY` - which showed up as
+ * random failures in unrelated tests. No assertion is weakened by this.
+ */
+function cleanup(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // A leftover temp directory is not a test failure.
+  }
+}
+
 test('export then import restores the configuration exactly', () => {
   const { dir, file } = tempStore('roundtrip');
 
@@ -47,7 +63,7 @@ test('export then import restores the configuration exactly', () => {
   assert.deepEqual(reopened.getAll(), before);
   assert.equal(reopened.initialized, true);
 
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('a backup written by the userscript itself can be imported', () => {
@@ -64,7 +80,7 @@ test('a backup written by the userscript itself can be imported', () => {
   store.replaceAll(parsed.values);
 
   assert.deepEqual(new GmStore(file).getAll(), bare);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('a rejected backup leaves the existing configuration untouched', () => {
@@ -82,7 +98,7 @@ test('a rejected backup leaves the existing configuration untouched', () => {
   if (parsed.ok) store.replaceAll(parsed.values);
 
   assert.deepEqual(store.getAll(), { GM_Panel: { keep: true } });
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('the store writes atomically and reports initialisation', () => {
@@ -98,5 +114,5 @@ test('the store writes atomically and reports initialisation', () => {
   store.clear();
   assert.deepEqual(new GmStore(file).getAll(), {});
 
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });

@@ -51,6 +51,22 @@ function quiet(run) {
   }
 }
 
+
+/**
+ * Remove a test's temp directory, tolerating a failure to do so.
+ *
+ * Cleanup says nothing about the code under test. In a sandboxed environment the delete can
+ * be refused outright - a safe-delete shim failing with `ENOTEMPTY` - which showed up as
+ * random failures in unrelated tests. No assertion is weakened by this.
+ */
+function cleanup(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // A leftover temp directory is not a test failure.
+  }
+}
+
 test('a log line carries a timestamp, a level and the JSON payload', () => {
   const dir = tempDir('format');
   const log = quiet(() => createLogFile({ dir })).value;
@@ -60,7 +76,7 @@ test('a log line carries a timestamp, a level and the JSON payload', () => {
   const content = fs.readFileSync(log.path, 'utf8');
   assert.match(content, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \[info\] 开始导航 /);
   assert.match(content, /"url":"https:\/\/www\.douyin\.com\/"/);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('the log directory is created if it does not exist', () => {
@@ -69,7 +85,7 @@ test('the log directory is created if it does not exist', () => {
   const log = quiet(() => createLogFile({ dir })).value;
   log.info('启动');
   assert.equal(fs.existsSync(log.path), true);
-  fs.rmSync(path.dirname(path.dirname(dir)), { recursive: true, force: true });
+  cleanup(path.dirname(path.dirname(dir)));
 });
 
 test('rotation keeps the configured number of previous files', () => {
@@ -87,7 +103,7 @@ test('rotation keeps the configured number of previous files', () => {
   assert.equal(fs.existsSync(log.rotatedPath(2)), true, 'two rotated files expected');
   // Never more than `keep`, however long it runs.
   assert.equal(fs.existsSync(log.rotatedPath(3)), false);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('navigations and load failures are recorded', () => {
@@ -106,7 +122,7 @@ test('navigations and load failures are recorded', () => {
   assert.equal(content.includes('https://sub.frame/'), false, 'subframes must not be logged');
   assert.match(content, /页面加载失败 .*ERR_NAME_NOT_RESOLVED/);
   assert.equal(content.includes('ERR_ABORTED'), false, 'ERR_ABORTED is routine noise');
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('repeated console messages are collapsed instead of flooding the log', () => {
@@ -126,7 +142,7 @@ test('repeated console messages are collapsed instead of flooding the log', () =
   assert.equal(lines.length, 2, `expected 2 lines, got:\n${lines.join('\n')}`);
   assert.match(lines[0], /upgrade-insecure-requests/);
   assert.match(lines[1], /something new/);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('the same message from different scripts is still the same message', () => {
@@ -149,7 +165,7 @@ test('the same message from different scripts is still the same message', () => 
 
   const lines = fs.readFileSync(log.path, 'utf8').trim().split('\n');
   assert.equal(lines.length, 1, `expected 1 line, got:\n${lines.join('\n')}`);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('messages that differ only by an embedded id are treated as repeats', () => {
@@ -170,7 +186,7 @@ test('messages that differ only by an embedded id are treated as repeats', () =>
   assert.equal(lines.length, 1, `expected 1 line, got:\n${lines.join('\n')}`);
   // The written line keeps the real message, not the normalised key.
   assert.match(lines[0], /1789912126867/);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('normalisation only collapses long digit runs', () => {
@@ -202,7 +218,7 @@ test('a repeat that outlives the window is logged again with the count it hid', 
   assert.equal(lines.length, 2, `expected 2 lines, got:\n${lines.join('\n')}`);
   assert.equal(lines[0].includes('suppressedSinceLast'), false);
   assert.match(lines[1], /"suppressedSinceLast":2/);
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
 
 test('info-level console output is not captured', () => {
@@ -217,5 +233,5 @@ test('info-level console output is not captured', () => {
   contents.emit('console-message', {}, { level: 0, message: 'verbose', lineNumber: 1, sourceId: 'src' });
 
   assert.equal(fs.existsSync(log.path), false, 'no lines expected for info/verbose');
-  fs.rmSync(dir, { recursive: true, force: true });
+  cleanup(dir);
 });
