@@ -16,7 +16,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-const { createLogFile } = require('../app/diagnostics/log-file');
+const { HARD_LIMIT_MULTIPLE, createLogFile } = require('../app/diagnostics/log-file');
 const {
   attachPageDiagnostics,
   isLoggableNavigation,
@@ -270,4 +270,37 @@ test('the loading document never reaches the log, but the page after it does', (
   assert.match(lines[0], /开始导航/);
   assert.match(lines[0], /douyin\.com/);
   cleanup(dir);
+});
+
+test('the log stays bounded even when rotation cannot happen', () => {
+  // The realistic way to get here: the menu item opens the log in an editor, and Windows
+  // refuses to rename a file another process holds open. Rotation then silently does nothing
+  // on every write, and "2 MB cap" stops being a cap.
+  //
+  // Forced by making `main.log.2` a non-empty directory: the rotation loop tries to remove it
+  // before renaming `main.log.1` over it, and removing a directory that way throws.
+  const dir = tempDir('ceiling');
+  const maxBytes = 1024;
+  const hardLimit = maxBytes * HARD_LIMIT_MULTIPLE;
+  try {
+    fs.writeFileSync(path.join(dir, 'main.log.1'), 'older', 'utf8');
+    fs.mkdirSync(path.join(dir, 'main.log.2'));
+    fs.writeFileSync(path.join(dir, 'main.log.2', 'keep'), 'not empty', 'utf8');
+
+    // Bigger than the ceiling before the first write even happens.
+    fs.writeFileSync(path.join(dir, 'main.log'), 'x'.repeat(hardLimit + 2048), 'utf8');
+
+    const log = quiet(() => createLogFile({ dir, maxBytes, keep: 2 })).value;
+    log.info('after the ceiling');
+
+    const size = fs.statSync(log.path).size;
+    assert.ok(size < hardLimit, `expected under ${hardLimit} bytes, got ${size}`);
+    assert.match(fs.readFileSync(log.path, 'utf8'), /已丢弃较早内容/, 'and says why the start is missing');
+
+    // And it stays bounded however long it keeps running.
+    for (let i = 0; i < 40; i += 1) log.info(`line ${i}`, { padding: 'y'.repeat(200) });
+    assert.ok(fs.statSync(log.path).size < hardLimit, 'still bounded after more writes');
+  } finally {
+    cleanup(dir);
+  }
 });

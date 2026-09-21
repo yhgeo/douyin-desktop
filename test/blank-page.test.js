@@ -144,16 +144,25 @@ test('every rung clears storage and none of them clears cookies', () => {
   }
 });
 
-test('retries are immediate first, then spaced out', () => {
+test('only the first round is immediate, and the rest are spaced out', () => {
+  // Round 1 is the cheap local fix; making the user wait for it buys nothing.
   assert.equal(backoffForRound(1), 0);
-  assert.equal(backoffForRound(2), 0);
-  assert.equal(backoffForRound(3), 0);
+  // Every round after it waits. These three used to be 0, which meant the first three rungs
+  // ran back to back - and each ends in a reload, so that was three requests to the server in
+  // under two seconds. Read off a real report: 21:44:57.021, 21:44:57.820, 21:44:58.767.
+  for (const round of [2, 3, 4]) {
+    assert.ok(backoffForRound(round) > 0, `round ${round} must wait`);
+  }
+  assert.ok(backoffForRound(2) < backoffForRound(3), 'and they grow');
+  assert.ok(backoffForRound(3) < backoffForRound(4), 'and they grow');
+
+  // The table is indexed by round, and the last entry is the cap.
   assert.deepEqual(
-    BACKOFF_MS.map((_, index) => backoffForRound(LADDER.length + index + 1)),
+    BACKOFF_MS.map((_, index) => backoffForRound(index + 1)),
     BACKOFF_MS,
   );
-  // The cap holds however long the server stays unreachable.
   assert.equal(backoffForRound(99), BACKOFF_MS[BACKOFF_MS.length - 1]);
+  assert.equal(backoffForRound(0), BACKOFF_MS[0], 'round numbers are clamped, not wrapped');
 });
 
 // ---------------------------------------------------------------------------
@@ -207,6 +216,10 @@ test('the watcher escalates rung by rung and reports its progress', async () => 
   attachBlankPageRecovery(page, {
     session,
     settleMs: 0,
+    // The real table now waits 5 s before rung 2 and 20 s before rung 3, which is the point of
+    // it - see the backoff tests. This test is about the rungs themselves, so it collapses the
+    // waits rather than sitting through 25 seconds.
+    backoffMs: [0, 0, 0, 0],
     log: () => {},
     onStatus: (status) => statuses.push(status),
     onRecovered: (info) => recoveries.push(info),
@@ -353,10 +366,19 @@ test('a captcha interstitial is reported instead of being repaired', async () =>
 });
 
 test('the backoff stops leaning on a server that is not answering', () => {
-  // Every retry is another request against a client the server is already unhappy with,
-  // and the state only healed after the machine went quiet for five minutes.
-  assert.ok(BACKOFF_MS[0] >= 15000, 'first backoff is ' + BACKOFF_MS[0] + ' ms');
-  assert.ok(BACKOFF_MS[BACKOFF_MS.length - 1] >= 300000, 'cap is ' + BACKOFF_MS[BACKOFF_MS.length - 1] + ' ms');
+  // Every retry is another request against a client the server is already unhappy with, and
+  // the state only healed after the machine went quiet for five minutes.
+  //
+  // So the cap has to be *longer* than that quiet period. At 300 s it was not: the app made
+  // a request every five minutes, which is exactly the interval that was measured to heal the
+  // refusal, so the server never got its quiet period and the app could hold the failure open
+  // for as long as it was left running.
+  const cap = BACKOFF_MS[BACKOFF_MS.length - 1];
+  assert.ok(cap > 300000, `the cap must exceed the five minutes that heal a refusal, got ${cap} ms`);
+  // And the waits grow towards it rather than jumping straight there.
+  for (let round = 2; round < BACKOFF_MS.length; round += 1) {
+    assert.ok(BACKOFF_MS[round] > BACKOFF_MS[round - 1], `round ${round + 1} must wait longer than ${round}`);
+  }
 });
 
 test('a page that recovers on its own clears the captcha notice', async () => {

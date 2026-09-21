@@ -126,15 +126,26 @@ function withTimeout(promise, ms, onTimeout) {
 }
 
 /**
- * Waits used once the escalation ladder is exhausted, in order.
+ * How long to wait before each round, indexed by round number (1-based). The last entry is
+ * the cap: it holds however long the server stays unreachable.
  *
- * These grew after measuring what the aggressive schedule actually did. Once the
- * server stops serving the document at all - answering zero bytes, or a captcha
- * interstitial - every retry is another request against a client it is already
- * unhappy with, and the app was firing one every 10s, then 30s, then 60s, forever.
- * The state healed only after the machine went quiet for five minutes.
+ * Round 1 is immediate on purpose. It is the cheap local fix, and when a damaged store is
+ * what emptied the page, making the user watch a black window for a few seconds before
+ * trying it buys nothing.
+ *
+ * **Every round after it waits, and that is the fix.** The first three rounds used to run
+ * back to back, and since each one ends in `reloadIgnoringCache()` that was three requests
+ * to the server in under two seconds - read straight off a report: `21:44:57.021`,
+ * `21:44:57.820`, `21:44:58.767`. The server has a state that tightens with request
+ * frequency, so the aggressive opening was making the outage it was trying to repair more
+ * likely to last. The user's own words were "自动等待重试 6 次也没好".
+ *
+ * The cap is deliberately longer than the five minutes of quiet that were measured to heal
+ * a refusal. Retrying every five minutes meant the server never got five minutes, so the
+ * app could hold the failure open indefinitely - a repair that prevents recovery is worse
+ * than one that gives up and says so.
  */
-const BACKOFF_MS = [15000, 60000, 180000, 300000];
+const BACKOFF_MS = [0, 5000, 20000, 60000, 180000, 300000, 600000];
 
 /**
  * The escalation ladder. `round` is 1-based; anything beyond the ladder repeats the
@@ -290,11 +301,15 @@ async function applyLadderStep(targetSession, origin, round) {
   return { actions, removedCookies, stepFailures };
 }
 
-/** How long to wait before retrying, given the round number. */
-function backoffForRound(round) {
-  const extra = round - LADDER.length;
-  if (extra <= 0) return 0;
-  return BACKOFF_MS[Math.min(extra, BACKOFF_MS.length) - 1];
+/**
+ * How long to wait before a round, given its 1-based number.
+ *
+ * @param {number} round
+ * @param {number[]} [table] overridden by tests, so they do not have to sit through the real waits
+ */
+function backoffForRound(round, table = BACKOFF_MS) {
+  const index = Math.min(Math.max(round, 1), table.length) - 1;
+  return table[index];
 }
 
 /**
@@ -319,6 +334,9 @@ function attachBlankPageRecovery(contents, options = {}) {
     origin = DOUYIN_ORIGIN,
     settleMs = SETTLE_MS,
     maxRounds = Infinity,
+    // Overridden by tests: they need to walk the whole ladder without sitting through the
+    // real waits, and those waits are now long enough to make that impractical.
+    backoffMs = BACKOFF_MS,
     log = () => {},
     onStatus = () => {},
     onRecovered = () => {},
@@ -418,7 +436,7 @@ function attachBlankPageRecovery(contents, options = {}) {
     }
 
     rounds += 1;
-    const wait = backoffForRound(rounds);
+    const wait = backoffForRound(rounds, backoffMs);
     // Past the ladder this is no longer "we can fix this", it is "the server is not
     // answering" - worth saying differently so the log and the title bar stop implying
     // that a local repair is imminent.

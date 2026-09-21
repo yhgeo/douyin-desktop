@@ -58,6 +58,13 @@ const SKIP_DIRS = new Set([
   'blob_storage',
   'component_crx_cache',
   'extensions_crx_cache',
+  // Not a cache, and skipped for a different reason: it is the diagnostic history of the
+  // *previous* installation. Carrying it over put 3200 lines from an older version - naming
+  // `%APPDATA%` as the data directory and a version two releases back - at the top of the new
+  // install's log, and the newest line in it was hours old. That is actively misleading when
+  // someone is diagnosing a failure and reads the log from the top. A fresh install starts a
+  // fresh log; the old one is still where it always was.
+  'logs',
 ]);
 
 /**
