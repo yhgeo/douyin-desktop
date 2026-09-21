@@ -10,6 +10,7 @@ const { EventEmitter } = require('node:events');
 
 const {
   BACKOFF_MS,
+  CAPTCHA_RECHECK_MS,
   LADDER,
   SETTLE_MS,
   STORAGES,
@@ -335,4 +336,98 @@ test('the backoff stops leaning on a server that is not answering', () => {
   // and the state only healed after the machine went quiet for five minutes.
   assert.ok(BACKOFF_MS[0] >= 15000, 'first backoff is ' + BACKOFF_MS[0] + ' ms');
   assert.ok(BACKOFF_MS[BACKOFF_MS.length - 1] >= 300000, 'cap is ' + BACKOFF_MS[BACKOFF_MS.length - 1] + ' ms');
+});
+
+test('a page that recovers on its own clears the captcha notice', async () => {
+  // Reported 2026-09-21: the window kept saying 服务器要求人机验证 long after the page was
+  // fine and no captcha had ever been shown. The captcha branch resets `rounds` to 0, and
+  // `healthy` was only reported when rounds > 0 - so the notice had nothing to clear it.
+  const captchaState = {
+    href: 'https://www.douyin.com/',
+    readyState: 'complete',
+    bodyChildren: 3,
+    scripts: 3,
+    decoded: 38095,
+    title: '验证码中间页',
+    captcha: true,
+  };
+  const page = new FakePage([captchaState, GOOD_STATE]);
+  const statuses = [];
+
+  attachBlankPageRecovery(page, {
+    session: fakeSession(),
+    settleMs: 0,
+    log: () => {},
+    onStatus: (status) => statuses.push(status),
+  });
+
+  page.emit('did-finish-load');
+  await settle();
+  assert.deepEqual(statuses.map((item) => item.phase), ['captcha']);
+
+  // The page moved on by itself. FakePage only serves the next state once a reload has
+  // happened, and a captcha clearing is a navigation rather than a repair - so the index
+  // is advanced directly instead of through reloadIgnoringCache().
+  page.index = 1;
+  page.emit('did-finish-load');
+  await settle();
+
+  assert.deepEqual(statuses.map((item) => item.phase), ['captcha', 'healthy']);
+});
+
+test('a healthy load never touches the title bar', async () => {
+  // The other half of the same rule: clearing must not turn into churn. A normal load
+  // reports 'healthy' once and then stays quiet, so the window title is not rewritten
+  // on every navigation.
+  const page = new FakePage([GOOD_STATE, GOOD_STATE, GOOD_STATE]);
+  const statuses = [];
+
+  attachBlankPageRecovery(page, {
+    session: fakeSession(),
+    settleMs: 0,
+    log: () => {},
+    onStatus: (status) => statuses.push(status),
+  });
+
+  for (let i = 0; i < 3; i += 1) {
+    page.emit('did-finish-load');
+    await settle();
+  }
+
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].phase, 'healthy');
+});
+
+test('the captcha notice is re-checked rather than set and forgotten', async () => {
+  // A captcha can clear without a navigation, so the state is polled while it lasts.
+  const captchaState = {
+    href: 'https://www.douyin.com/',
+    readyState: 'complete',
+    bodyChildren: 3,
+    scripts: 3,
+    decoded: 38095,
+    title: '验证码中间页',
+    captcha: true,
+  };
+  const page = new FakePage([captchaState]);
+  const statuses = [];
+
+  const stop = attachBlankPageRecovery(page, {
+    session: fakeSession(),
+    settleMs: 0,
+    log: () => {},
+    onStatus: (status) => statuses.push(status),
+  });
+
+  page.emit('did-finish-load');
+  await settle();
+  assert.equal(statuses.length, 1);
+
+  // Past the re-check interval the state is examined again; still captcha, so the notice
+  // is not repeated (the phase did not change).
+  await new Promise((resolve) => setTimeout(resolve, CAPTCHA_RECHECK_MS + 200));
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].phase, 'captcha');
+
+  stop();
 });

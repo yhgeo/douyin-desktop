@@ -80,6 +80,15 @@ const ANTI_CRAWL_COOKIE_PREFIX = '__ac_';
  */
 const SETTLE_MS = 700;
 
+/**
+ * How often the captcha state is re-checked.
+ *
+ * The challenge can clear itself - the page navigates on, or the user finishes it - and
+ * the title bar must not outlive it. The probe is local, so this costs a timer and
+ * nothing else.
+ */
+const CAPTCHA_RECHECK_MS = 3000;
+
 /** Enough scripts to be sure a real Douyin page rendered, not the challenge page. */
 const REAL_PAGE_SCRIPTS = 5;
 
@@ -274,6 +283,23 @@ function attachBlankPageRecovery(contents, options = {}) {
   let stopped = false;
   /** Report the captcha interstitial once per episode, not once per check. */
   let captchaReported = false;
+  /** The phase last handed to onStatus, so a stale one can always be cleared. */
+  let lastPhase = null;
+
+  /**
+   * Report a phase, dropping a repeated 'healthy'.
+   *
+   * The title bar is the only thing a user sees while the page is unusable, so a phase
+   * has to be cleared as reliably as it is set - and it was not. `healthy` used to be
+   * reported only when `rounds > 0`, while the captcha branch resets `rounds` to 0; a
+   * page that recovered by itself therefore kept saying 服务器要求人机验证 for good
+   * (reported 2026-09-21). Reporting is driven by the phase actually changing instead.
+   */
+  const reportStatus = (status) => {
+    const changed = status.phase !== lastPhase;
+    lastPhase = status.phase;
+    if (changed || status.phase !== 'healthy') onStatus(status);
+  };
 
   const stop = () => { clearTimeout(timer); timer = null; };
 
@@ -318,17 +344,23 @@ function attachBlankPageRecovery(contents, options = {}) {
       if (!captchaReported) {
         captchaReported = true;
         log('warn', '服务器要求人机验证', { href: state.href, title: state.title });
-        onStatus({ phase: 'captcha', href: state.href });
+        reportStatus({ phase: 'captcha', href: state.href });
       }
+      // Keep watching: the interstitial can clear without a navigation, and the notice
+      // must not stay behind if it does.
+      scheduleCheck(CAPTCHA_RECHECK_MS);
       return;
     }
 
     if (!isBlankDocument(state)) {
+      const wasUnhealthy = lastPhase !== null && lastPhase !== 'healthy';
       captchaReported = false;
-      if (rounds > 0) {
+      if (rounds > 0 || wasUnhealthy) {
         log('info', '页面已恢复', { rounds, scripts: state.scripts, decoded: state.decoded, href: state.href });
-        onStatus({ phase: 'healthy', rounds });
       }
+      // Always offered; the helper drops it unless the phase really changed, so a normal
+      // load does not touch the title bar.
+      reportStatus({ phase: 'healthy' });
       if (state.scripts >= REAL_PAGE_SCRIPTS) rounds = 0;
       return;
     }
@@ -349,11 +381,15 @@ function attachBlankPageRecovery(contents, options = {}) {
       waitMs: wait,
       state,
     });
-    onStatus({ phase, round: rounds, waitMs: wait });
+    reportStatus({ phase, round: rounds, waitMs: wait });
 
     if (wait > 0) {
       stop();
       timer = setTimeout(() => { if (!stopped) repair(rounds).catch(() => {}); }, wait);
+      // A watcher timer must never be the reason a process stays alive. Found the hard way:
+      // the captcha re-check below makes this loop self-perpetuating while a captcha lasts,
+      // and an unstopped watcher then held a unit-test process open indefinitely.
+      if (timer.unref) timer.unref();
       return;
     }
     await repair(rounds);
@@ -363,6 +399,7 @@ function attachBlankPageRecovery(contents, options = {}) {
     if (stopped) return;
     stop();
     timer = setTimeout(() => { check().catch(() => {}); }, delay);
+    if (timer.unref) timer.unref();
   };
 
   const onFinish = () => scheduleCheck();
@@ -388,6 +425,7 @@ function attachBlankPageRecovery(contents, options = {}) {
 
 module.exports = {
   ANTI_CRAWL_COOKIE_PREFIX,
+  CAPTCHA_RECHECK_MS,
   CAPTCHA_TITLE,
   BACKOFF_MS,
   COOKIE_TIMEOUT_MS,
