@@ -38,9 +38,10 @@ npm run dist       # 打包便携版到 dist/
 app/
   main.js                    入口：只负责启动
   main/                      主进程编排
-    lifecycle.js             启动顺序、单实例锁、UA、退出刷盘
+    lifecycle.js             启动顺序、单实例锁、UA、下载策略挂载、退出刷盘
     window.js                主窗口，以及挂在页面上的所有 watcher
     titles.js                修复状态对应的窗口标题（纯函数，可单测）
+    title-state.js           每个窗口当前的修复状态；两个标题写入方共用同一份
     menu.js                  应用菜单
     ipc.js                   与页面侧的全部 IPC 通道
     actions.js               工具菜单里的恢复动作
@@ -48,7 +49,7 @@ app/
     userscript-menu.js       脚本自己注册的菜单项与加载状态
     broadcast.js             向所有 frame 广播
   preload/                   页面侧桥接
-    index.js                 入口：判断 frame 类型后分派
+    index.js                 入口：判断 frame 与站点后分派（实际只在顶层 frame 运行）
     gm-api.js                GM_* API 实现
     inject.js                注入 vendor 依赖与用户脚本
   recovery/                  一类问题一个模块
@@ -60,7 +61,8 @@ app/
     constants.js             路径等（主进程专用）
     dom-ready.js             等 <html> 出现再注入
     url-policy.js            哪些 URL 能交给系统
-    web-contents-guard.js    跳转与弹窗策略
+    web-contents-guard.js    跳转与弹窗策略（挂在 webContents 上）
+    downloads.js             下载策略与 GM_download（挂在 session 上）
     external-links.js        唯一允许调 shell.openExternal 的地方
     http.js                  GM_xmlhttpRequest 的实现
   storage/                   持久化
@@ -72,6 +74,8 @@ app/
     logger.js                应用日志实例
     log-file.js              轮转文件
     page-diagnostics.js      页面事件采集与去重
+test/                        单元测试（node --test，不需要 Electron）
+  helpers/electron-stub.js   替身夹具；唯一需要它的测试见「测试」
 tools/
   build/                     构建辅助：清理 dist 与历史构建目录
   e2e/                       端到端测试与桩服务器
@@ -93,7 +97,11 @@ tools/
 | 清理站点存储时**永不含 `cookies`** | 清 cookie 会掉登录；且实测证明 cookie 不是黑屏的原因（把出问题的 55 个 cookie 注入全新 profile，页面照常加载） |
 | 每个 e2e 窗口显式写 `sandbox: false` | 不写会默认启用沙箱渲染进程；在创建不了 Chromium 子进程沙箱的环境里，渲染进程会在加载途中被杀 —— `ERR_FAILED` 加一个永不返回的 `executeJavaScript`，用例挂住且什么都不报告 |
 | watcher 的定时器必须 `unref()` | 会自续的定时器（如验证码重查）会让进程永不退出 —— 单元测试里没人调 `stop()` |
+| 但"为答复调用方而存在"的定时器**不得** `unref()` | 与上一条相反。`unref` 之后事件循环会在调用方仍在等待时退出（实测让 10 个用例被判为 `cancelled`）。它要在结算时 `clearTimeout`，而不是 unref —— 它存在的意义就是把事件循环**留住**到给出答复 |
 | 每个跨进程调用都要设时限 | `cookies.*`、`clearStorageData`、`clearCache` 都由 Chromium 的**网络服务**执行；该服务崩溃时 promise 永不 settle，修复会卡在半路 —— 比失败更糟 |
+| `will-download` 只能挂在 `session` 上 | 它是 **Session** 事件，不是 WebContents 事件。挂在 `webContents` 上不报错、只是永不触发 —— 自定义协议下载防护曾因此完全失效（见「下载策略」） |
+| 持有 GM 值的对象必须是 null 原型 | 普通对象字面量上 `obj['__proto__'] = v` 走的是继承来的 setter，会**换掉原型**而不是加一个键：值读得到、`has()` 说没有、也不会落盘 |
+| 从渲染进程来的载荷先校验形状 | 页面与 preload 共享同一作用域（`contextIsolation: false`），IPC 参数不是可信输入；GM 值还可能是用户手改或从 Tampermonkey 导入的 |
 | 判定页面状态不能只看"元素是否存在" | 站点会预建隐藏元素：抖音在**正常页面**上就有一个隐藏的验证 iframe |
 | 状态必须"清得掉"和"设得上"一样可靠 | 否则提示会永久留在窗口标题上（曾经如此） |
 | 注入等 `<html>` 出现，而不是等 `DOMContentLoaded` | 早于 `<html>` 注入会让脚本抛错并**整体中断**（见「注入时机」） |
@@ -106,10 +114,15 @@ tools/
 
 脚本的 GM 值落盘在 `userData/userscript-config.json`（`app/storage/gm-store.js`），**不放网页的 `localStorage`**。
 放在站点存储里有三个问题：`clearStorageData()` 会把脚本配置一起清掉（两个「清除」分不开）；
-抖音页面自己能读改清；多个 iframe 各缓存一份快照、各自整体覆盖写，会互相丢更新。
+抖音页面自己能读改清；以及快照式整体覆盖写会丢更新 —— 每个持有副本的执行环境都读一次全量、改一处、
+整体写回，两处并发就互相抹掉。
+
+最后一条今天还不会发生（preload 只在顶层 frame 运行，只有一个副本），但它是这套存储**不能**留在页面的
+结构性原因：Tampermonkey 下的同一份脚本会注入到每个匹配的 iframe，而桌面端只要哪天打开
+`nodeIntegrationInSubFrames` 也会变成多副本。真源只有主进程里那一份。
 
 preload 通过同步的 `gm-store-read` 一次取回全量数据缓存在内存（`GM_getValue` 是同步调用），
-写入走 `gm-store-set`，主进程再广播 `gm-store-changed` 让所有 frame 同步。
+写入走 `gm-store-set`，主进程再广播 `gm-store-changed` 让持有副本的 frame 同步。
 首次运行会把旧版留在 `localStorage` 里的配置迁移过来。
 
 于是两项清除互不影响：
@@ -123,6 +136,10 @@ preload 通过同步的 `gm-store-read` 一次取回全量数据缓存在内存�
 `{ key: value }`** —— 后者正是脚本自身「导出至文件」的格式，所以桌面端与 Tampermonkey 的备份可以互相通用。
 导入会先确认再整体覆盖，并校验非空、是 JSON 对象、体积不超过 8 MB。
 
+包装格式靠 `app` 标记**加上 `format` 字段**共同识别。只看 `app` + `values` 会把一份恰好用了这两个
+键名的裸配置读成包装格式：实测三键进、一键出 —— `values` 被当成载荷，其余设置被静默丢掉。
+带标记但没有 `format` 的文件现在**明确报错**而不是猜，因为猜错的代价是用户的配置。
+
 ### 注入时机：等 `<html>`，不等 `DOMContentLoaded`
 
 Electron 的 preload 在**文档创建之前**执行，那时 `document.documentElement` 是 `null`。
@@ -135,6 +152,29 @@ Electron 的 preload 在**文档创建之前**执行，那时 `document.document
 `app/platform/dom-ready.js` 因此等解析器插入 `<html>` 后再注入。该时机仍在页面自身脚本之前
 （测试断言 `pageScriptsRanAtInject === 0`），保留 `document-start` 语义。
 
+### `contextIsolation: false` 的取舍
+
+窗口用 `contextIsolation: false` + `nodeIntegration: false` + `sandbox: false`。这不是随手写的默认值，
+是这套方案的前提：
+
+- 内置脚本是 Tampermonkey 脚本，**必须**跑在页面自己的全局作用域里才能改页面 —— `inject.js` 依赖
+  这一点（用的是间接 `eval`）。
+- `contextIsolation: true` 会把 preload 关进隔离世界，脚本就改不到页面；`sandbox: true` 则不让
+  preload 用 `node:fs` 读内置脚本与 `vendor/` 里的依赖。
+
+代价要说清楚：preload 与页面**共享同一个 `window`**，所以页面能摸到 GM_* 的实现。
+兜底不是"信任页面"，而是把应用侧的能力面收窄：
+
+| 措施 | 收窄了什么 |
+| --- | --- |
+| `nodeIntegration: false` | 页面拿不到 `require`，只能用 preload 显式暴露的那几个函数 |
+| GM_* 是一份固定的 API 面 | 没有"任意通道"可用；新增能力必须显式写进 `gm-api.js` |
+| 每个 IPC 载荷都校验形状 | 页面传进来的不是可信输入（见「不变量」） |
+| 对外打开只走 `openExternalSafely()` | 页面无法让应用去执行本地程序或自定义协议 |
+
+> 分寸是"信任抖音的页面，但不假设它永远不作恶"：站点本来就能读写自己的存储与网络，真正的边界在
+> **应用侧的能力**，那部分必须显式收口。
+
 ### 跳转与弹窗策略
 
 `will-navigate` **只对主框架触发**，而抖音大量使用 iframe —— 子框架里的 `bytedance://` 跳转
@@ -146,11 +186,32 @@ Electron 的 preload 在**文档创建之前**执行，那时 `document.document
 | `setWindowOpenHandler` | 抖音自身域名的弹窗**放行**（登录 / 验证 / 分享依赖这些窗口）；普通外链交给系统浏览器；字节系第三方与自定义协议丢弃 |
 | `will-frame-navigate` | 覆盖主框架与全部子框架，非 http(s)/about/blob/data 一律拦截 |
 | `will-navigate` / `will-redirect` | 冗余兜底，覆盖服务端重定向 |
-| `will-download` | 取消自定义协议的下载 |
 | `openExternalSafely()` | 应用内唯一调用 `shell.openExternal` 的入口，非 http(s) 直接拒绝 |
 
 > 分寸在这里：**拦的是自定义协议**，不是抖音自己的网页弹窗。把 `*.douyin.com` 的 `window.open`
 > 也拦掉，抖音的弹窗就拿不到新窗口、遮罩无法关闭，表现为"选完就卡住，只能刷新"。
+
+### 下载策略：`will-download` 是 Session 事件
+
+上面那张表的通道都挂在 `webContents` 上，下载不在其中 —— `will-download` 属于 **`session`**。
+
+这个区别不会报错，只会让处理器**永不触发**。早先的写法是 `contents.on('will-download', ...)`，
+用来丢弃自定义协议的下载；实测同时挂两处、触发两次下载，结果是 `webContents` 上 **0 次**、
+`session` 上 **2 次** —— 那段防护一直是死代码，`bytedance://` 之类的下载仍会走到 Windows Shell，
+正是本应用要消灭的"需要新应用以打开此链接"。
+
+`app/platform/downloads.js` 因此挂在 session 上，同时负责两件事：
+
+| 职责 | 说明 |
+| --- | --- |
+| 拒绝非 http(s) 下载 | 自定义协议一律 `preventDefault()`，不留任何交给系统的路径 |
+| 支撑 `GM_download` | 用脚本指定的文件名保存，并把进度 / 完成 / 取消回传给发起方 |
+
+第二件事不是可选项：脚本的下载 UI 完全建立在这些回调上（进度百分比、失败提示、关闭 toast 时取消）。
+原先的实现是**立即调 `onload()`**，于是在传输开始之前就告诉用户"下载已完成"。
+
+> 队列按 URL 分桶，不是全局 FIFO：`downloadURL()` 是异步兑现的，全局队列会在两个下载重叠时
+> 把名字配错文件。落盘前还会过一次文件名清洗与去重 —— `setSavePath()` 是**静默覆盖**的。
 
 ### 单实例锁与 profile
 
@@ -171,7 +232,7 @@ Electron 的 preload 在**文档创建之前**执行，那时 `document.document
 ### User-Agent
 
 Electron 会把 `<productName>/<version>` 拼进 UA，而本应用叫"抖音"，于是它对外宣称自己是
-`... 抖音/0.2.0 Chrome/...` —— 一个网页没理由冒充的抖音 App 身份。实测在出问题的状态下，
+`... 抖音/<version> Chrome/...` —— 一个网页没理由冒充的抖音 App 身份。实测在出问题的状态下，
 这个 UA 拿到的是 `application/json` + 0 字节，而普通 Chrome UA 拿到的是 HTML。
 现在只去掉这个 token，其余保持 Chromium 原样。
 
@@ -192,9 +253,14 @@ Electron 会把 `<productName>/<version>` 拼进 UA，而本应用叫"抖音"，
 
 | 形态 | 判据 | 处理 |
 | --- | --- | --- |
-| 空文档 | `readyState: complete` + body 无子元素 + 无脚本 + `decoded: 0` | 跑阶梯（清站点数据等） |
+| 空文档 | `readyState: complete` + body 无子元素 + 无脚本 | 跑阶梯（清站点数据等） |
 | 反爬挑战页 | 约 101 KB、`<body></body>` + 1 段混淆脚本（`_$jsvmprt`） | **不要动它**，它自己会算签名并跳转 |
 | 验证码中间页 | `title === '验证码中间页'`，约 38 KB、有 body 有脚本 | 什么都不做，只提示用户 |
+
+判据里的三项是**与**关系，并且刻意**不含** `decoded`（已解码字节数）。探针仍会把它带回来写进日志，
+因为它对排查有用 —— 但它不进判定：Chromium 会把非空的 `text/plain` 与 JSON 响应包进元素里，
+"有没有内容"这件事 `bodyChildren` 已经覆盖；而把 `decoded === 0` 也要求上，反而会**漏掉真正该修的那种**：
+一个约 40 字节、有 `<html>` 却没有任何内容的空壳，它的 `decoded` 并不是 0。
 
 第三种最容易误判：它有 body 有脚本，所以空文档检测器**不会**触发，窗口就那么废着、日志里也没有任何东西。
 
@@ -288,8 +354,31 @@ npm run test:e2e  # 端到端：真实 preload + 本地桩服务器
 npm run test:all  # 全部
 ```
 
+单元测试跑在 `node --test` 下，**不需要 Electron** —— 所以纯逻辑尽量挪进不依赖 `electron` 的模块
+（`main/titles.js`、`platform/script-meta.js` 就是这么来的）。
+
+剩下几个模块（`platform/downloads.js`、`web-contents-guard.js`）的行为本身就长在 Electron 对象上，
+拆不干净，于是用 `test/helpers/electron-stub.js` 在 `require` 之前把 `electron` 换掉。原因很具体：
+Electron 之外 `require('electron')` 返回的是**二进制路径字符串**，`const { app } = require('electron')`
+得到 `undefined`，而 `platform/constants.js` 在加载期就调 `app.getPath('userData')`（那是刻意的，
+见该文件注释）—— 于是模块根本 import 不进来。
+
+| 测试文件 | 覆盖 |
+| --- | --- |
+| `titles` / `title-state` | 窗口标题的文案，以及"页面改标题不能冲掉修复提示" |
+| `url-policy` | 协议与域名判定（含仿冒域名） |
+| `config-transfer` / `config-backup` / `gm-store` | 备份格式、导入校验、键与原型安全 |
+| `blank-page` | 空文档与验证码判定、阶梯动作、时限与定时器回收 |
+| `http` | 重定向跟随、取消、响应体上限（本地服务器，不出网） |
+| `downloads` | 下载策略与 `GM_download` 的回调链 |
+| `diagnostics` | 日志轮转与控制台消息折叠 |
+
 端到端用本地 TLS 服务配合 Chromium host resolver 伪造一个真实的 `www.douyin.com`
 （`douyin.com` 在 HSTS 预加载列表里，必须走 HTTPS），并加载生产用的 `app/preload/index.js` 与内置脚本。
+
+> 端到端**不**覆盖下载策略，原因有两条：自定义协议在 Chromium 里根本不会启动下载，没有事件可断言；
+> 而 e2e 骨架自建窗口与 IPC，并不跑 `app/main.js`，也就碰不到 `lifecycle.js` 里那次挂载。
+> 所以"处理器到底有没有被调用"由单元测试用假 session 直接 emit `will-download` 钉住。
 
 > `tools/e2e/certs/` 下的自签证书不入版本管理，测试运行时用 `openssl` 自动生成。
 >
@@ -298,7 +387,8 @@ npm run test:all  # 全部
 > `window.__douyinDesktopLocalStub`，证明自己确实跑在桩页面上。
 >
 > 运行器会清掉 `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS`：前者会让 Electron 退化成普通 Node，
-> 导致所有用例以难以理解的方式失败。
+> 导致所有用例以难以理解的方式失败。手动跑单个 e2e 脚本时同样要清 ——
+> `ELECTRON_RUN_AS_NODE=`（赋空值）**不等于**取消设置。
 
 ## 打包与发布
 
