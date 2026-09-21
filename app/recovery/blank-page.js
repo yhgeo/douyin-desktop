@@ -151,9 +151,16 @@ const PROBE = `(() => {
     scripts: document.scripts.length,
     decoded: nav ? nav.decodedBodySize : -1,
     title: document.title,
-    // The captcha interstitial embeds the verify centre; a real page never does.
-    captcha: document.title === '${CAPTCHA_TITLE}'
-      || Boolean(document.querySelector('iframe[src*="verifycenter"], iframe[src*="rmc-nocaptcha"]')),
+    // Raw signals only - isCaptchaState decides. Douyin pre-creates a hidden verify-centre
+    // frame on the ordinary page, so finding one proves nothing on its own.
+    captchaFrameVisible: (() => {
+      const frame = document.querySelector('iframe[src*="verifycenter"], iframe[src*="rmc-nocaptcha"]');
+      if (!frame) return false;
+      const rect = frame.getBoundingClientRect();
+      const style = getComputedStyle(frame);
+      return rect.width > 1 && rect.height > 1
+        && style.display !== 'none' && style.visibility !== 'hidden';
+    })(),
   };
 })()`;
 
@@ -169,6 +176,33 @@ function isBlankDocument(state) {
   if (!state || typeof state !== 'object') return false;
   if (state.readyState !== 'complete') return false;
   return state.bodyChildren === 0 && state.scripts === 0;
+}
+
+/**
+ * Body children a captcha interstitial can have. It is a small document (about 3); a real
+ * Douyin page has hundreds.
+ */
+const CAPTCHA_MAX_BODY_CHILDREN = 20;
+
+/**
+ * Is the server asking for a human?
+ *
+ * The title is the signal that identifies it: the interstitial is a small document titled
+ * 验证码中间页. A verify-centre frame is NOT enough on its own - Douyin pre-creates a hidden
+ * one on the ordinary page, and treating that as a challenge made the window claim
+ * 服务器要求人机验证 while the page was perfectly usable. Measured 2026-09-21 14:33: the
+ * notice fired against a page whose title was 抖音-记录美好生活, which is also what the user
+ * reported as "no captcha appeared, but the notice stayed".
+ *
+ * @param {object} state the PROBE result
+ */
+function isCaptchaState(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.title === CAPTCHA_TITLE) return true;
+  // A *visible* challenge frame on a document with no real content is also the captcha.
+  return state.captchaFrameVisible === true
+    && typeof state.bodyChildren === 'number'
+    && state.bodyChildren < CAPTCHA_MAX_BODY_CHILDREN;
 }
 
 /** Clear the storage that breaks Douyin's anti-crawl challenge. Keeps the login. */
@@ -337,7 +371,7 @@ function attachBlankPageRecovery(contents, options = {}) {
     const state = await inspect();
     if (!state) return;
 
-    if (state.captcha) {
+    if (isCaptchaState(state)) {
       // Not blank, but just as unusable - and clearing site data would not help,
       // because nothing on this machine is wrong. Report it and stop climbing.
       rounds = 0;
@@ -441,5 +475,6 @@ module.exports = {
   clearAntiCrawlCookies,
   clearDouyinSiteStorage,
   isBlankDocument,
+  isCaptchaState,
   withTimeout,
 };

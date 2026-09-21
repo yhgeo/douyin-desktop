@@ -19,6 +19,7 @@ const {
   backoffForRound,
   clearAntiCrawlCookies,
   isBlankDocument,
+  isCaptchaState,
   withTimeout,
 } = require('../app/recovery/blank-page');
 
@@ -430,4 +431,20 @@ test('the captcha notice is re-checked rather than set and forgotten', async () 
   assert.equal(statuses[0].phase, 'captcha');
 
   stop();
+});
+
+test('a hidden verify-centre frame on a normal page is not a captcha', () => {
+  // Measured 2026-09-21 14:33 in the log: 服务器要求人机验证 was reported against a page whose
+  // title was 抖音-记录美好生活. Douyin pre-creates a hidden verify-centre iframe on the
+  // ordinary page, and merely finding one was treated as proof of a challenge - so the
+  // notice appeared on a perfectly usable page, which is what the user reported as
+  // "no captcha appeared, but the notice stayed".
+  assert.equal(isCaptchaState({ title: '抖音-记录美好生活', captchaFrameVisible: true, bodyChildren: 160 }), false);
+  assert.equal(isCaptchaState({ title: '抖音-记录美好生活', captchaFrameVisible: false, bodyChildren: 160 }), false);
+  // The interstitial itself: its title is the reliable signal...
+  assert.equal(isCaptchaState({ title: '验证码中间页', captchaFrameVisible: false, bodyChildren: 3 }), true);
+  // ...and a visible challenge frame on a document with no real content also counts.
+  assert.equal(isCaptchaState({ title: '抖音', captchaFrameVisible: true, bodyChildren: 3 }), true);
+  assert.equal(isCaptchaState(null), false);
+  assert.equal(isCaptchaState(undefined), false);
 });
