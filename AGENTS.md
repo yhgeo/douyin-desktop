@@ -32,7 +32,11 @@ npm run dist:installer  # 打包安装版（NSIS）到 dist/
 窗口顶部 **抖音优化** 菜单可启用 / 停用脚本、打开配置界面（`Ctrl+,`）、导出 / 导入配置。
 
 > **便携版每次启动要自解压，约多花 12 秒**；安装版没有这个开销。数字与原因见
-> 「[启动耗时](#启动耗时日志从哪一刻开始算)」。两者共用同一份 profile，换用不会掉登录。
+> 「[启动耗时](#启动耗时日志从哪一刻开始算)」。
+>
+> 安装版可以自选安装目录，数据放在安装目录下的 `data\` —— 见
+> 「[数据目录](#数据目录打包后的版本自带数据)」。**首次启动会把已有的 `%APPDATA%` 数据复制过去**，
+> 登录态与脚本配置一并保留。
 
 ## 项目结构
 
@@ -43,6 +47,7 @@ app/
   main.js                    入口：只负责启动
   main/                      主进程编排
     lifecycle.js             启动顺序、单实例锁、UA、下载策略挂载、退出刷盘
+    profile-location.js      把数据目录指到应用旁边（必须最先跑）
     window.js                主窗口，以及挂在页面上的所有 watcher
     titles.js                修复状态对应的窗口标题（纯函数，可单测）
     title-state.js           每个窗口当前的修复状态；两个标题写入方共用同一份
@@ -63,6 +68,7 @@ app/
   platform/                  Chromium / Electron 平台层
     script-meta.js           主进程与 preload 共用的名称（不依赖 electron）
     constants.js             路径等（主进程专用）
+    profile-dir.js           数据目录规则与搬家复制（不依赖 electron，可单测）
     loading-document.js      加载页（不依赖 electron，可单测）
     dom-ready.js             等 <html> 出现再注入
     url-policy.js            哪些 URL 能交给系统
@@ -108,6 +114,9 @@ tools/
 | 持有 GM 值的对象必须是 null 原型 | 普通对象字面量上 `obj['__proto__'] = v` 走的是继承来的 setter，会**换掉原型**而不是加一个键：值读得到、`has()` 说没有、也不会落盘 |
 | 从渲染进程来的载荷先校验形状 | 页面与 preload 共享同一作用域（`contextIsolation: false`），IPC 参数不是可信输入；GM 值还可能是用户手改或从 Tampermonkey 导入的 |
 | 加载页必须是 `data:`，且带 body 子元素 | 两个方向都会静默出事：`file:` 会被 `web-contents-guard.js` 的导航白名单拦掉（用户又看到黑窗）；而没有 body 子元素会被空文档判定命中，**每次启动清掉用户的站点数据**。两条都由 `test/loading-document.test.js` 钉住 |
+| 打包版本的数据目录必须在可写位置 | 数据随应用放置（`<exe 目录>\data`），所以装进 `Program Files` 这类受保护目录就写不进去。安装器是 per-user，启动时还会**实测**一次可写性并回退到 `%APPDATA%` —— 但别把"能装上"当成"能写数据" |
+| 数据目录只能由 `main/profile-location.js` 决定，且必须最先执行 | `platform/constants.js` 在加载期解析全部路径，所以晚一步就锁定到旧目录了。`app/main.js` 里那两行在 logger 之前，不是排版问题 |
+| 搬家用复制，不用移动 | 源目录不动，最坏结果是多一份 profile，而不是少一份。反过来做，一次失败的搬家就等于用户的登录没了 |
 | 判定页面状态不能只看"元素是否存在" | 站点会预建隐藏元素：抖音在**正常页面**上就有一个隐藏的验证 iframe |
 | 状态必须"清得掉"和"设得上"一样可靠 | 否则提示会永久留在窗口标题上（曾经如此） |
 | 注入等 `<html>` 出现，而不是等 `DOMContentLoaded` | 早于 `<html>` 注入会让脚本抛错并**整体中断**（见「注入时机」） |
@@ -219,16 +228,43 @@ Electron 的 preload 在**文档创建之前**执行，那时 `document.document
 > 队列按 URL 分桶，不是全局 FIFO：`downloadURL()` 是异步兑现的，全局队列会在两个下载重叠时
 > 把名字配错文件。落盘前还会过一次文件名清洗与去重 —— `setSavePath()` 是**静默覆盖**的。
 
-### 单实例锁与 profile
+### 数据目录：打包后的版本自带数据
 
-`userData` 由 `package.json` 的 `name`（`douyin-desktop`）决定，**与构建方式无关** —— 所以开发运行、
-便携版、安装版共用同一份 profile，登录态与脚本配置才能在它们之间延续。
+打包后的版本把数据放在**自己旁边**（`platform/profile-dir.js` 定规则，`main/profile-location.js` 干活）：
 
-代价是**不能同时运行两个**：Chromium 的 profile 是 LevelDB，不支持多进程写入，两个一起写会留下
-半写坏的状态 —— 而"半写坏的 `Local Storage/leveldb`"正是黑屏的形态。
+| 运行方式 | `userData` |
+| --- | --- |
+| 安装版 / `win-unpacked` | `<抖音.exe 所在目录>\data` |
+| 便携版 | 便携 exe 所在目录下的 `data\`（用 `PORTABLE_EXECUTABLE_DIR`，不是那个临时解压目录） |
+| 开发运行（`npm start`） | 不变，仍是 `%APPDATA%\douyin-desktop` |
 
-所以有单实例锁：第二个实例立刻退出，把已有窗口唤到最前，日志里写明。启动日志会记录这次是哪种运行方式
-（`mode` / `portable` / `execPath`），不确定时看 **工具 → 打开运行日志** 的第一行。
+早先三种运行方式共用 `%APPDATA%\douyin-desktop`。那是有意的（登录态与脚本配置能跨版本延续），
+但装到机器上之后有两个代价：**开发运行与安装版不能同时开**（同一个 profile，而单实例锁按 profile 生效），
+以及**在一边清除站点数据会清掉另一边的**。把打包版本的数据放到自己旁边，这两件事一起消失 ——
+开发时折腾应用再也不会动到已安装版本的登录。
+
+**首次运行会搬一次家**：新目录还没有 profile、而 `%APPDATA%\douyin-desktop` 有，就把后者**复制**过去
+（源目录不动）。跳过缓存目录是刻意的：实测一个用过的 profile 是 647 MB，其中 640 MB 是 `Cache` 与
+`Code Cache`，而真正不可再生的部分（登录 cookie、站点数据、两个配置文件）只有约 8 MB ——
+所以这次复制不到一秒。没有这一步，用户会在毫无提示的情况下掉登录，正是本项目最不想制造的那种静默丢失。
+
+三条失败路径都回退到 `%APPDATA%` 并在日志里写明（目录建不出来、不可写、复制没完成）：
+数据目录不对是麻烦，应用起不来不是。
+
+> **卸载会连同 `data` 一起删掉**：`uninstaller.nsh` 里是 `RMDir /r $INSTDIR`，而数据就在安装目录里。
+> 这是"数据随应用放置"的固有代价，备份方式就是复制 `data` 文件夹。
+> `deleteAppDataOnUninstall: false` 仍然保留 —— 那份 `%APPDATA%` 的旧数据不该因为卸载被清掉。
+> 要改的话，`uninstaller.nsh:156` 的 `customUnInstall` 宏在删除**之前**执行，可以在那里把 `data`
+> 挪出去；没有这么做，是因为写一段无法在本机验证的 NSIS 脚本，风险高于它解决的问题。
+
+### 单实例锁
+
+单实例锁按 **profile** 生效（Electron 把锁放在 `userData` 里），所以上表里**不同**运行方式可以同时开，
+**同一种**不能开两个。同一个 profile 被两个进程写会留下半写坏的状态 ——
+而"半写坏的 `Local Storage/leveldb`"正是黑屏的形态。
+
+第二个实例立刻退出，把已有窗口唤到最前，日志里写明。启动日志会记录这次是哪种运行方式
+（`mode` / `portable` / `execPath`）以及实际使用的数据目录，不确定时看 **工具 → 打开运行日志** 的第一行。
 
 > 单实例锁只能约束**带锁的版本**。更早的构建（没有锁）仍可能与新版本同时启动 ——
 > 机器上如果还留着旧副本，不要运行它。
@@ -258,11 +294,10 @@ Electron 会把 `<productName>/<version>` 拼进 UA，而本应用叫"抖音"，
 有人报「打开要十几秒」时，第一个问题是**这十几秒在谁那里**。实测（外部计时，因为 app 自己看不见
 最早那一段）：
 
-| 阶段 | 便携版 | 安装版 / `win-unpacked` |
-| --- | --- | --- |
-| 进程创建 → app 就绪 | **15742 ms** | **2986 ms** |
-| app 就绪 → 窗口出现 | 142 ms | 232 ms |
-| 窗口出现 → 页面加载完 | 4669 ms | 10161 ms（网络波动很大） |
+| 进程启动 → | 便携版 | 安装版（首次） | 安装版（之后每次） |
+| --- | --- | --- | --- |
+| app 就绪 | **15742 ms** | 2804 ms | **270–392 ms** |
+| 页面加载完成 | **20553 ms** | 9857 ms | **5845–6065 ms** |
 
 **便携版多出来的约 12.7 秒全在自解压上。** 它是 NSIS 自解压包：每次启动把整个应用（约 470 MB）
 从 100 MB 的压缩包里解到 `%TEMP%\<随机目录>`，从那里运行，退出时删掉。读
@@ -270,8 +305,11 @@ Electron 会把 `<productName>/<version>` 拼进 UA，而本应用叫"抖音"，
 **无条件重新解压** —— 所以把 `portable.unpackDirName` 改成固定名字也**不会**带来复用，
 它只改变解压到哪里。这是这个格式的固有代价，不是配置没调对。
 
+**首次和之后要分开看**：安装版首次启动的 2804 ms 里，大头是 Windows Defender 扫描刚写入的
+约 470 MB；热启动只要 270–392 ms。便携版没有"之后"—— 它每次解压出的都是新文件，于是每次都要
+再被扫一遍。所以正确的说法不是"安装版快 12 秒"，而是**"便携版每次都是首次"**。
+
 安装版（`npm run dist:installer`）把文件放到固定位置，启动时直接读，省掉这 12.7 秒。
-两者共用同一份 profile（`userData` 由 package.json 的 `name` 决定），换过去不掉登录、不丢脚本配置。
 
 日志里的时间线只能从**本进程的模块加载**开始算（`process.uptime()`，实测模块加载 78 ms、
 `whenReady` 187 ms），所以它**看不见**自解压那一段 —— 那段发生在进程存在之前。启动那行因此记
@@ -426,6 +464,7 @@ Electron 之外 `require('electron')` 返回的是**二进制路径字符串**�
 | 测试文件 | 覆盖 |
 | --- | --- |
 | `titles` / `title-state` | 窗口标题的文案，以及"页面改标题不能冲掉修复提示" |
+| `profile-dir` | 数据目录规则，以及搬家时复制什么、跳过什么 |
 | `loading-document` | 加载页与导航白名单、空文档判定的交叉约束 |
 | `url-policy` | 协议与域名判定（含仿冒域名） |
 | `config-transfer` / `config-backup` / `gm-store` | 备份格式、导入校验、键与原型安全 |
@@ -455,18 +494,22 @@ Electron 之外 `require('electron')` 返回的是**二进制路径字符串**�
 
 ```console
 npm run dist            # 便携版 → dist/抖音 x.y.z.exe
-npm run dist:installer  # 安装版 → dist/抖音 Setup x.y.z.exe（NSIS，单用户，一键安装）
+npm run dist:installer  # 安装版 → dist/抖音 Setup x.y.z.exe（NSIS，单用户，可选安装目录）
 npm run clean:stale     # 清理历史遗留的构建目录
 ```
 
-两个产物只差打包方式，代码与 profile 完全相同 —— 但**启动耗时差约 12.7 秒**，原因见
-「[启动耗时](#启动耗时日志从哪一刻开始算)」。便携版给不想安装的场景，安装版给在意启动速度的场景。
+两个产物只差打包方式，代码完全相同 —— 但**启动耗时差约 12.7 秒**（原因见
+「[启动耗时](#启动耗时日志从哪一刻开始算)」），而且**数据位置不同**（见
+「[数据目录](#数据目录打包后的版本自带数据)」）。便携版给不想安装的场景，安装版给在意启动速度的场景。
+
+`oneClick: false` + `allowToChangeInstallationDirectory: true` 让安装器带一个目录选择页。它是
+per-user 的，所以默认位置在 `%LOCALAPPDATA%\Programs\抖音`，不需要管理员；但**用户可以选一个
+不可写的目录**，那种情况下安装会失败，或者应用启动时回退到 `%APPDATA%` 并记一条 warn。
 
 `dist:installer` 刻意**没有** `predist`：清 `dist/` 只应在一次构建序列的开头做一次，否则第二个
 产物会把第一个删掉。所以顺序是 `npm run dist && npm run dist:installer`。
 
-安装版的 `deleteAppDataOnUninstall: false` 是刻意的：卸载不该顺手删掉 `userData`，那里有登录态和
-脚本配置。
+`deleteAppDataOnUninstall: false` 是刻意的：卸载不该顺手删掉 `%APPDATA%` 里那份历史数据。
 
 网络受限时先设镜像：把 `ELECTRON_MIRROR` 设为 `https://registry.npmmirror.com/-/binary/electron/`。
 不要设 `ELECTRON_BUILDER_BINARIES_MIRROR` —— 它会改变 NSIS 工具链的缓存 key 触发重新下载，
