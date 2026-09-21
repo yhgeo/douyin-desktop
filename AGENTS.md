@@ -22,13 +22,17 @@
 
 ```console
 npm install
-npm start          # 开发运行；改动源码后重启生效
-npm test           # 单元测试
-npm run test:e2e   # 端到端测试（自带桩服务器，不需要外网）
-npm run dist       # 打包便携版到 dist/
+npm start               # 开发运行；改动源码后重启生效
+npm test                # 单元测试
+npm run test:e2e        # 端到端测试（自带桩服务器，不需要外网）
+npm run dist            # 打包便携版到 dist/
+npm run dist:installer  # 打包安装版（NSIS）到 dist/
 ```
 
 窗口顶部 **抖音优化** 菜单可启用 / 停用脚本、打开配置界面（`Ctrl+,`）、导出 / 导入配置。
+
+> **便携版每次启动要自解压，约多花 12 秒**；安装版没有这个开销。数字与原因见
+> 「[启动耗时](#启动耗时日志从哪一刻开始算)」。两者共用同一份 profile，换用不会掉登录。
 
 ## 项目结构
 
@@ -59,6 +63,7 @@ app/
   platform/                  Chromium / Electron 平台层
     script-meta.js           主进程与 preload 共用的名称（不依赖 electron）
     constants.js             路径等（主进程专用）
+    loading-document.js      加载页（不依赖 electron，可单测）
     dom-ready.js             等 <html> 出现再注入
     url-policy.js            哪些 URL 能交给系统
     web-contents-guard.js    跳转与弹窗策略（挂在 webContents 上）
@@ -102,6 +107,7 @@ tools/
 | `will-download` 只能挂在 `session` 上 | 它是 **Session** 事件，不是 WebContents 事件。挂在 `webContents` 上不报错、只是永不触发 —— 自定义协议下载防护曾因此完全失效（见「下载策略」） |
 | 持有 GM 值的对象必须是 null 原型 | 普通对象字面量上 `obj['__proto__'] = v` 走的是继承来的 setter，会**换掉原型**而不是加一个键：值读得到、`has()` 说没有、也不会落盘 |
 | 从渲染进程来的载荷先校验形状 | 页面与 preload 共享同一作用域（`contextIsolation: false`），IPC 参数不是可信输入；GM 值还可能是用户手改或从 Tampermonkey 导入的 |
+| 加载页必须是 `data:`，且带 body 子元素 | 两个方向都会静默出事：`file:` 会被 `web-contents-guard.js` 的导航白名单拦掉（用户又看到黑窗）；而没有 body 子元素会被空文档判定命中，**每次启动清掉用户的站点数据**。两条都由 `test/loading-document.test.js` 钉住 |
 | 判定页面状态不能只看"元素是否存在" | 站点会预建隐藏元素：抖音在**正常页面**上就有一个隐藏的验证 iframe |
 | 状态必须"清得掉"和"设得上"一样可靠 | 否则提示会永久留在窗口标题上（曾经如此） |
 | 注入等 `<html>` 出现，而不是等 `DOMContentLoaded` | 早于 `<html>` 注入会让脚本抛错并**整体中断**（见「注入时机」） |
@@ -247,6 +253,60 @@ Electron 会把 `<productName>/<version>` 拼进 UA，而本应用叫"抖音"，
 
 这个日志是刻意加的：前面几次排查最缺的就是"出问题那一刻的现场"。
 
+### 启动耗时：日志从哪一刻开始算
+
+有人报「打开要十几秒」时，第一个问题是**这十几秒在谁那里**。实测（外部计时，因为 app 自己看不见
+最早那一段）：
+
+| 阶段 | 便携版 | 安装版 / `win-unpacked` |
+| --- | --- | --- |
+| 进程创建 → app 就绪 | **15742 ms** | **2986 ms** |
+| app 就绪 → 窗口出现 | 142 ms | 232 ms |
+| 窗口出现 → 页面加载完 | 4669 ms | 10161 ms（网络波动很大） |
+
+**便携版多出来的约 12.7 秒全在自解压上。** 它是 NSIS 自解压包：每次启动把整个应用（约 470 MB）
+从 100 MB 的压缩包里解到 `%TEMP%\<随机目录>`，从那里运行，退出时删掉。读
+`app-builder-lib/templates/nsis/portable.nsi` 确认过：`RMDir /r $INSTDIR` 之后紧接 `File /r`，
+**无条件重新解压** —— 所以把 `portable.unpackDirName` 改成固定名字也**不会**带来复用，
+它只改变解压到哪里。这是这个格式的固有代价，不是配置没调对。
+
+安装版（`npm run dist:installer`）把文件放到固定位置，启动时直接读，省掉这 12.7 秒。
+两者共用同一份 profile（`userData` 由 package.json 的 `name` 决定），换过去不掉登录、不丢脚本配置。
+
+日志里的时间线只能从**本进程的模块加载**开始算（`process.uptime()`，实测模块加载 78 ms、
+`whenReady` 187 ms），所以它**看不见**自解压那一段 —— 那段发生在进程存在之前。启动那行因此记
+`timing.moduleLoadMs` / `timing.appReadyMs`，窗口起来后再记一行：
+
+```
+启动     {"timing":{"moduleLoadMs":…,"appReadyMs":…},"mode":"packaged","portable":true,…}
+窗口就绪  {"totalMs":…,"windowMs":…}
+```
+
+`portable: true` 是关键字段：看到它，就知道这些数字**不包含**那 12.7 秒。否则一次慢启动看起来
+就像代码慢。
+
+### 加载页：黑窗不能拿来当加载状态
+
+窗口在页面取回来之前就创建了，而它的背景色是近黑 —— 恰好也是这个应用在**服务器不给页面**时的样子。
+于是「正常加载中」和「本应用有一整套恢复机制的那个故障」长得一模一样，而恢复机制的提示在标题栏，
+盯着黑矩形的人不会去看。
+
+`platform/loading-document.js` 因此提供一个本地文档：logo + 「正在加载…」。两个约束都不是审美问题：
+
+- **必须是 `data:`**。`web-contents-guard.js` 只放行 http(s)/about/blob/data/filesystem/chrome/devtools，
+  所以 `loadFile()` 会被**本应用自己的策略**拦掉。logo 内联成 data URI，文档因此完全自足 ——
+  `data:` 是不透明源，取不到任何外部文件。
+- **必须带 body 子元素**。空文档判定要求「无 body 子元素 **且** 无脚本」，所以一个纯文字的加载页
+  会被判成空文档 —— 每次启动清一遍用户的站点数据。实测 `bodyChildren: 2`，安全。
+
+它被刻意抽成不依赖 `electron` 的模块：`platform/constants.js` 在加载期调 `app.getPath`，引用它的
+模块根本无法单测，而这两条约束正是最需要被钉住的。诊断那边也配合了一处：`page-diagnostics.js`
+只记录 http(s) 导航，否则这个几 KB 的 `data:` URL 会每次启动往日志里灌两遍。
+
+代价也量过，不是感觉（同机 dev A/B）：加载页让「app 就绪 → 真正开始导航」从 146 ms 变成 391 ms，
+**净成本约 245 ms**；换来的是打包版里约 1.8 秒的黑窗变成可见反馈。这笔交易不接近，但前提是知道
+那 245 ms 是多少 —— 所以下次有人想「优化掉」这个加载页，先看这一行。
+
 ## 恢复机制
 
 三类"页面坏了"，处理方式不同，**不要混为一谈**：
@@ -366,6 +426,7 @@ Electron 之外 `require('electron')` 返回的是**二进制路径字符串**�
 | 测试文件 | 覆盖 |
 | --- | --- |
 | `titles` / `title-state` | 窗口标题的文案，以及"页面改标题不能冲掉修复提示" |
+| `loading-document` | 加载页与导航白名单、空文档判定的交叉约束 |
 | `url-policy` | 协议与域名判定（含仿冒域名） |
 | `config-transfer` / `config-backup` / `gm-store` | 备份格式、导入校验、键与原型安全 |
 | `blank-page` | 空文档与验证码判定、阶梯动作、时限与定时器回收 |
@@ -393,9 +454,19 @@ Electron 之外 `require('electron')` 返回的是**二进制路径字符串**�
 ## 打包与发布
 
 ```console
-npm run dist        # 输出 dist/抖音 x.y.z.exe（只出便携版）
-npm run clean:stale # 清理历史遗留的构建目录
+npm run dist            # 便携版 → dist/抖音 x.y.z.exe
+npm run dist:installer  # 安装版 → dist/抖音 Setup x.y.z.exe（NSIS，单用户，一键安装）
+npm run clean:stale     # 清理历史遗留的构建目录
 ```
+
+两个产物只差打包方式，代码与 profile 完全相同 —— 但**启动耗时差约 12.7 秒**，原因见
+「[启动耗时](#启动耗时日志从哪一刻开始算)」。便携版给不想安装的场景，安装版给在意启动速度的场景。
+
+`dist:installer` 刻意**没有** `predist`：清 `dist/` 只应在一次构建序列的开头做一次，否则第二个
+产物会把第一个删掉。所以顺序是 `npm run dist && npm run dist:installer`。
+
+安装版的 `deleteAppDataOnUninstall: false` 是刻意的：卸载不该顺手删掉 `userData`，那里有登录态和
+脚本配置。
 
 网络受限时先设镜像：把 `ELECTRON_MIRROR` 设为 `https://registry.npmmirror.com/-/binary/electron/`。
 不要设 `ELECTRON_BUILDER_BINARIES_MIRROR` —— 它会改变 NSIS 工具链的缓存 key 触发重新下载，
@@ -416,8 +487,9 @@ npm run clean:stale # 清理历史遗留的构建目录
 Windows 不允许删除已打开的文件，这是共享冲突而**不是权限问题**（改权限或夺取所有权都没用），
 所以不点名的话完全没法排查。
 
-发布：打 tag，用 `gh release create` 上传 `dist/抖音 x.y.z.exe`。GitHub 连接不稳时给命令加重试，
-并先查是否已留下带资产的草稿，避免重复上传 95 MB。
+发布：打 tag，用 `gh release create` 上传两个产物。资产名用 **ASCII**（`x.y.z.exe` / `x.y.z-setup.exe`，
+把文件复制一份再上传），与历史 release 的 `0.2.0.exe` 保持一致，便于脚本按固定规则下载。
+GitHub 连接不稳时给命令加重试，并先查是否已留下带资产的草稿，避免重复上传上百 MB。
 
 ## 排查手册
 
