@@ -51,7 +51,15 @@ app.whenReady().then(async () => {
     response.end(clearCount >= 2 ? GOOD_PAGE : EMPTY_DOCUMENT);
   });
 
-  const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true } });
+  // `sandbox: false` is explicit on purpose. Left unset, Electron defaults to a sandboxed
+  // renderer; an environment that cannot create Chromium's sandboxed child processes (the
+  // same class of failure as the GPU process needing --disable-gpu-sandbox) then kills the
+  // renderer during the load, which surfaces as `ERR_FAILED` and an `executeJavaScript` that
+  // never settles. The app itself runs with sandbox: false, so this also matches production.
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: { contextIsolation: true, sandbox: false },
+  });
 
   // The stub flips to serving a real page once storage is cleared. Observing the
   // clear here is what proves the recovery actually ran.

@@ -43,6 +43,13 @@ npm run test:all  # 全部
 > 测试运行器会清掉 `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS`：前者会让 Electron 退化成
 > 普通 Node，导致所有用例以难以理解的方式失败。
 
+> **每个 e2e 窗口都要显式写 `sandbox: false`。** 不写的话 Electron 默认启用沙箱渲染进程，
+> 而有些环境（CI、受限账户、代理沙箱）创建不了 Chromium 的沙箱子进程 —— 渲染进程会在加载
+> 途中被杀，表现为 `ERR_FAILED` 加一个永不返回的 `executeJavaScript`，整个用例挂住、什么都不报告。
+> 2026-09-21 就是这个原因：`blank-page-main.js` 漏了这一个字段，于是只有它在其它五段全绿的
+> 情况下稳定失败；补上后全套 85/85，耗时从 3 分 27 秒降到 29 秒。这与 GPU 进程需要
+> `--disable-gpu-sandbox` 是同一类问题（本环境无法创建 Chromium 的子进程沙箱）。
+
 ## 项目结构
 
 代码按职责分层。`app/main.js` 只是入口，短到能当目录读；每一层的入口文件也都是一次能读完的长度。
