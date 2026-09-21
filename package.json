@@ -13,7 +13,7 @@
     "dist": "electron-builder --win portable",
     "dist:installer": "electron-builder --win nsis",
     "clean:stale": "node tools/build/clean-stale.js",
-    "lint": "node --check app/main.js && node --check app/main/lifecycle.js && node --check app/main/window.js && node --check app/main/titles.js && node --check app/main/title-state.js && node --check app/main/menu.js && node --check app/main/ipc.js && node --check app/main/actions.js && node --check app/main/broadcast.js && node --check app/main/userscript-config.js && node --check app/main/userscript-menu.js && node --check app/preload/index.js && node --check app/preload/gm-api.js && node --check app/preload/inject.js && node --check app/platform/constants.js && node --check app/platform/script-meta.js && node --check app/platform/loading-document.js && node --check app/platform/dom-ready.js && node --check app/platform/url-policy.js && node --check app/platform/web-contents-guard.js && node --check app/platform/downloads.js && node --check app/platform/external-links.js && node --check app/platform/http.js && node --check app/recovery/blank-page.js && node --check app/recovery/stuck-dialog.js && node --check app/recovery/responsiveness.js && node --check app/storage/settings.js && node --check app/storage/userscript-store.js && node --check app/storage/gm-store.js && node --check app/storage/config-transfer.js && node --check app/diagnostics/logger.js && node --check app/diagnostics/log-file.js && node --check app/diagnostics/page-diagnostics.js && node --check tools/build/clean-dist.js && node --check tools/build/clean-stale.js",
+    "lint": "node --check app/main.js && node --check app/main/lifecycle.js && node --check app/main/profile-location.js && node --check app/main/window.js && node --check app/main/titles.js && node --check app/main/title-state.js && node --check app/main/menu.js && node --check app/main/ipc.js && node --check app/main/actions.js && node --check app/main/broadcast.js && node --check app/main/userscript-config.js && node --check app/main/userscript-menu.js && node --check app/preload/index.js && node --check app/preload/gm-api.js && node --check app/preload/inject.js && node --check app/platform/constants.js && node --check app/platform/script-meta.js && node --check app/platform/profile-dir.js && node --check app/platform/loading-document.js && node --check app/platform/dom-ready.js && node --check app/platform/url-policy.js && node --check app/platform/web-contents-guard.js && node --check app/platform/downloads.js && node --check app/platform/external-links.js && node --check app/platform/http.js && node --check app/recovery/blank-page.js && node --check app/recovery/stuck-dialog.js && node --check app/recovery/responsiveness.js && node --check app/storage/settings.js && node --check app/storage/userscript-store.js && node --check app/storage/gm-store.js && node --check app/storage/config-transfer.js && node --check app/diagnostics/logger.js && node --check app/diagnostics/log-file.js && node --check app/diagnostics/page-diagnostics.js && node --check tools/build/clean-dist.js && node --check tools/build/clean-stale.js",
     "test": "node --test \"test/**/*.test.js\"",
     "test:e2e": "node tools/e2e/run-all.js",
     "test:all": "npm test && npm run test:e2e"
@@ -43,7 +43,8 @@
       "executableName": "抖音"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
