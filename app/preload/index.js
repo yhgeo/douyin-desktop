@@ -28,7 +28,10 @@ const frameId = `frame-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 // Douyin's "是否保存登录信息？" prompt can hang in its own close path, leaving a
 // full-screen mask over a page whose buttons are all disabled - unrecoverable without a
 // reload. Watch for that and recover it; see recovery/stuck-dialog.js for the chain.
-if (isTopFrame) {
+//
+// Gated on the site as well as the frame: this also runs on the local loading document in
+// main/window.js, where there is no dialog to watch and a 400 ms poll would be pure cost.
+if (isTopFrame && isDouyin) {
   whenDocumentElementAvailable(() => {
     installStuckDialogWatch({
       onRecovered: (info) => {

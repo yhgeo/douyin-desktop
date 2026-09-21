@@ -33,6 +33,18 @@ function normalizeForDedupe(message) {
 }
 
 /**
+ * Is this navigation worth a line in the log?
+ *
+ * Only real web navigations are. The loading document in main/window.js is a `data:` URL
+ * and runs to several kilobytes (it carries the logo inline), so logging it would put that
+ * whole string in the log on every launch - once per navigation event. It is also not a
+ * page the user asked for, so a failure to show it is not something to report either.
+ */
+function isLoggableNavigation(url) {
+  return /^https?:/i.test(String(url || ''));
+}
+
+/**
  * @param {Electron.WebContents} contents
  * @param {ReturnType<import('./log-file').createLogFile>} log
  * @param {{ dedupeMs?: number }} [options]
@@ -53,12 +65,14 @@ function attachPageDiagnostics(contents, log, options = {}) {
 
   const onStart = (event, url, isInPlace, isMainFrame) => {
     if (!isMainFrame) return;
+    if (!isLoggableNavigation(url)) return;
     if (url === lastLoggedUrl) return;
     log.info('开始导航', { url });
   };
 
   const onFinish = () => {
     const url = contents.getURL();
+    if (!isLoggableNavigation(url)) return;
     if (url === lastLoggedUrl) return;
     lastLoggedUrl = url;
     log.info('页面加载完成', { url });
@@ -68,6 +82,7 @@ function attachPageDiagnostics(contents, log, options = {}) {
     if (!isMainFrame) return;
     // -3 is ERR_ABORTED, which every ordinary navigation produces on its way out.
     if (errorCode === -3) return;
+    if (!isLoggableNavigation(validatedUrl)) return;
     log.warn('页面加载失败', { url: validatedUrl, errorCode, errorDescription });
   };
 
@@ -132,5 +147,6 @@ module.exports = {
   MAX_TRACKED_MESSAGES,
   NOTEWORTHY_LEVELS,
   attachPageDiagnostics,
+  isLoggableNavigation,
   normalizeForDedupe,
 };

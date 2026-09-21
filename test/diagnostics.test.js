@@ -17,7 +17,11 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
 const { createLogFile } = require('../app/diagnostics/log-file');
-const { attachPageDiagnostics, normalizeForDedupe } = require('../app/diagnostics/page-diagnostics');
+const {
+  attachPageDiagnostics,
+  isLoggableNavigation,
+  normalizeForDedupe,
+} = require('../app/diagnostics/page-diagnostics');
 
 function tempDir(name) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `dy-log-${name}-`));
@@ -233,5 +237,37 @@ test('info-level console output is not captured', () => {
   contents.emit('console-message', {}, { level: 0, message: 'verbose', lineNumber: 1, sourceId: 'src' });
 
   assert.equal(fs.existsSync(log.path), false, 'no lines expected for info/verbose');
+  cleanup(dir);
+});
+
+test('only real web navigations are worth a log line', () => {
+  // The loading document in main/window.js is a data: URL running to several kilobytes -
+  // the logo is inlined - so logging it would dump that whole string into the file on every
+  // launch, once for the start and once for the finish.
+  assert.equal(isLoggableNavigation('data:text/html;charset=utf-8,%3C!doctype'), false);
+  assert.equal(isLoggableNavigation('about:blank'), false);
+  assert.equal(isLoggableNavigation('file:///C:/app/index.html'), false);
+  assert.equal(isLoggableNavigation(''), false);
+  assert.equal(isLoggableNavigation(undefined), false);
+  assert.equal(isLoggableNavigation('https://www.douyin.com/'), true);
+  assert.equal(isLoggableNavigation('http://127.0.0.1:8080/'), true);
+});
+
+test('the loading document never reaches the log, but the page after it does', () => {
+  const dir = tempDir('splash');
+  const log = quiet(() => createLogFile({ dir })).value;
+  const contents = new FakeContents('data:text/html;charset=utf-8,%3C!doctype');
+
+  attachPageDiagnostics(contents, log, { dedupeMs: 0 });
+  contents.emit('did-start-navigation', {}, 'data:text/html;charset=utf-8,%3C!doctype', false, true);
+  contents.emit('did-finish-load');
+  assert.equal(fs.existsSync(log.path), false, 'a data: URL must not be written');
+
+  contents.url = 'https://www.douyin.com/';
+  contents.emit('did-start-navigation', {}, 'https://www.douyin.com/', false, true);
+  const lines = fs.readFileSync(log.path, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /开始导航/);
+  assert.match(lines[0], /douyin\.com/);
   cleanup(dir);
 });

@@ -19,6 +19,27 @@ const { createWindow, getMainWindow } = require('./window');
 const { titleFor } = require('./title-state');
 
 /**
+ * Milliseconds since the JavaScript environment started, at the moment this module was loaded.
+ *
+ * **This is not "since the process was created".** Measured on a packaged launch, this read
+ * 53 ms while the log line it accompanies was written 2804 ms after the process was spawned.
+ * The missing ~2.75 s is Electron's own bootstrap - Chromium init, the GPU process - and it
+ * is not this app's to fix. So these numbers deliberately begin *after* it, and must never be
+ * presented as the whole launch.
+ *
+ * What they do show is this app's own share, which is the part worth watching: module load ->
+ * `whenReady` -> window ready. Before this existed, "it takes fifteen seconds to open" was
+ * unanswerable from a log.
+ *
+ * The largest cost is invisible from here in a different way: the portable build unpacks
+ * ~470 MB into `%TEMP%` *before* the process exists. Measured from outside, that is ~12.7 s of
+ * a ~20 s portable launch, against ~3 s for the same build unpacked. That is why
+ * `describeRunMode().portable` is logged next to these numbers - without it, a slow launch
+ * reads as slow code.
+ */
+const MODULE_LOAD_MS = Math.round(process.uptime() * 1000);
+
+/**
  * A plain browser User-Agent.
  *
  * Electron appends `<productName>/<version>` to the default UA, and this app is named
@@ -161,12 +182,23 @@ async function start() {
     chrome: process.versions.chrome,
     userAgent: browserUserAgent(),
     logFile: log.path,
+    // Where this run's time went, as far as the app can see. Anything before `moduleLoadMs`
+    // - the process spawn, and for the portable build the whole unpack - is invisible from
+    // inside, so it is absent rather than reported as zero.
+    timing: { moduleLoadMs: MODULE_LOAD_MS, appReadyMs: Math.round(process.uptime() * 1000) },
     ...describeRunMode(),
   });
 
   registerIpcHandlers();
   buildMenu();
   await createWindow();
+
+  // The window is up and the page has finished its first load. Splitting this out is what
+  // makes "the app is slow to open" answerable from a log instead of from feel.
+  log.info('窗口就绪', {
+    totalMs: Math.round(process.uptime() * 1000),
+    windowMs: Math.round(process.uptime() * 1000) - MODULE_LOAD_MS,
+  });
 }
 
 module.exports = { browserUserAgent, describeRunMode, start };
