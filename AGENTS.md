@@ -234,7 +234,7 @@ Electron 的 preload 在**文档创建之前**执行，那时 `document.document
 | 运行方式 | `userData` |
 | --- | --- |
 | 安装版 / `win-unpacked` | `<抖音.exe 所在目录>\data` |
-| 便携版 | 便携 exe 所在目录下的 `data\`（用 `PORTABLE_EXECUTABLE_DIR`，不是那个临时解压目录） |
+| 便携版（已不再发布，代码路径仍在） | 便携 exe 所在目录下的 `data\`（用 `PORTABLE_EXECUTABLE_DIR`，不是那个临时解压目录） |
 | 开发运行（`npm start`） | 不变，仍是 `%APPDATA%\douyin-desktop` |
 
 早先三种运行方式共用 `%APPDATA%\douyin-desktop`。那是有意的（登录态与脚本配置能跨版本延续），

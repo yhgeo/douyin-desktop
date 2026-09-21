@@ -27,7 +27,9 @@ try {
   console.error('clean-dist: 删除 dist/ 失败 -> ' + error.code);
   console.error('  ' + String(error.message).split('\n')[0]);
   console.error('');
-  console.error('  通常是便携版或 dist/win-unpacked/抖音.exe 还在运行，占用了里面的文件。');
+  // `dist/win-unpacked/抖音.exe` is the realistic holder: the installed build lives somewhere
+  // else entirely, so it cannot lock this directory.
+  console.error('  通常是 dist/win-unpacked/抖音.exe 还在运行，占用了里面的文件。');
   console.error('  完全退出它（含后台残留进程）后，重新执行 npm run dist。');
   process.exit(1);
 }
