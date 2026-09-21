@@ -9,7 +9,7 @@
  */
 
 const { Menu, shell } = require('electron');
-const { HOME_URL, SCRIPT_NAME } = require('../platform/constants');
+const { APP_NAME, HOME_URL, SCRIPT_NAME } = require('../platform/constants');
 const log = require('../diagnostics/logger');
 const { openExternalSafely } = require('../platform/external-links');
 const { readSettings, writeSettings } = require('../storage/settings');
@@ -29,6 +29,7 @@ const {
   disableAntiCrawlCookieRemoval,
   repairUnloadablePage,
   requestStuckDialogRecovery,
+  showAbout,
 } = require('./actions');
 const { exportUserscriptConfig, importUserscriptConfig } = require('./userscript-config');
 
@@ -95,25 +96,47 @@ function buildScriptSubmenu() {
   return submenu;
 }
 
+/**
+ * The 工具 menu.
+ *
+ * Ordered by what someone reaching for this menu needs, not by what the code is: the recovery
+ * actions first (something is wrong right now), then the log (so they can report it), then the
+ * destructive clears, and developer tools last - they are not a user action, and having them
+ * at the top made the menu read as a developer menu.
+ *
+ * The long label is deliberate and worth the width: "移除某些Cookie" is a switch in the script's
+ * own panel, and nobody staring at a black window would guess that is where the cause is. The
+ * parenthetical is what makes it findable.
+ */
 function buildToolSubmenu() {
   return [
-    {
-      label: '开发者工具',
-      accelerator: 'CmdOrCtrl+Shift+I',
-      click: () => getMainWindow()?.webContents.toggleDevTools(),
-    },
     { label: '关闭卡住的弹窗', click: () => requestStuckDialogRecovery() },
     { label: '修复无法加载的页面', click: () => repairUnloadablePage() },
-    // Named for the symptom the user has, not for the setting: "移除某些Cookie" is a switch in
-    // the script's own panel, and someone looking at a black window would never guess that is
-    // where the cause is.
     { label: '关闭「移除某些Cookie」（黑屏的已知原因）', click: () => disableAntiCrawlCookieRemoval() },
+    { type: 'separator' },
     { label: '打开运行日志', click: () => { shell.openPath(log.path).catch(() => {}); } },
     { type: 'separator' },
-    { label: '清除抖音网页数据', click: () => clearDouyinSiteData() },
-    { label: '清除脚本配置数据', click: () => clearUserscriptData() },
+    { label: '清除抖音网页数据…', click: () => clearDouyinSiteData() },
+    { label: '清除脚本配置数据…', click: () => clearUserscriptData() },
+    { type: 'separator' },
+    { label: '开发者工具', accelerator: 'CmdOrCtrl+Shift+I', click: () => getMainWindow()?.webContents.toggleDevTools() },
     { type: 'separator' },
     { label: '退出抖音', accelerator: 'Alt+F4', role: 'quit' },
+  ];
+}
+
+function buildHelpSubmenu() {
+  return [
+    {
+      label: '使用说明',
+      click: () => openExternalSafely('https://github.com/yhgeo/douyin-desktop#readme'),
+    },
+    { label: '抖音优化脚本主页', click: () => openExternalSafely('https://scriptcat.org/zh-CN/script-show-page/2534') },
+    { label: '项目仓库', click: () => openExternalSafely('https://github.com/yhgeo/douyin-desktop') },
+    { type: 'separator' },
+    // Version and the data directory in one place. Both get asked for whenever something goes
+    // wrong, and both used to require opening a log file and reading its first lines.
+    { label: `关于 ${APP_NAME}`, click: () => showAbout() },
   ];
 }
 
@@ -140,13 +163,7 @@ function buildMenu() {
       ],
     },
     { label: '工具', submenu: buildToolSubmenu() },
-    {
-      label: '帮助',
-      submenu: [
-        { label: '抖音优化脚本主页', click: () => openExternalSafely('https://scriptcat.org/zh-CN/script-show-page/2534') },
-        { label: '项目仓库', click: () => openExternalSafely('https://github.com/yhgeo/douyin-desktop') },
-      ],
-    },
+    { label: '帮助', submenu: buildHelpSubmenu() },
   ]);
   Menu.setApplicationMenu(menu);
   return menu;

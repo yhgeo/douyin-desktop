@@ -8,8 +8,9 @@
  * user what happened. Each one exists because a specific failure had no in-page escape.
  */
 
-const { dialog, session } = require('electron');
+const { app, dialog, session, shell } = require('electron');
 const log = require('../diagnostics/logger');
+const { APP_NAME, USER_DATA } = require('../platform/constants');
 const { getMainWindow } = require('./window');
 const { broadcast } = require('./broadcast');
 const { clearCommands, resetLoadState, scheduleMenuRebuild } = require('./userscript-menu');
@@ -164,6 +165,43 @@ async function disableAntiCrawlCookieRemoval() {
   if (response === 0) window.webContents.reloadIgnoringCache();
 }
 
+/**
+ * Version and where the data lives, in one place.
+ *
+ * Both answers are asked for whenever something goes wrong, and both were only available by
+ * opening a log file and reading its first lines. The data directory is the one that matters
+ * most: it is where a backup is taken from, and since 0.2.2 it is not `%APPDATA%` any more.
+ */
+async function showAbout() {
+  const window = getMainWindow();
+  const lines = [
+    `版本 ${app.getVersion()}`,
+    `Electron ${process.versions.electron}　Chromium ${process.versions.chrome}`,
+    '',
+    `数据目录：${USER_DATA}`,
+    '（登录状态、脚本配置与运行日志都在这里；备份就是复制这个文件夹）',
+  ];
+
+  const buttons = ['好', '打开数据目录'];
+  const options = {
+    type: 'info',
+    noLink: true,
+    buttons,
+    defaultId: 0,
+    cancelId: 0,
+    title: `关于 ${APP_NAME}`,
+    message: APP_NAME,
+    detail: lines.join('\n'),
+  };
+
+  const result = window
+    ? await dialog.showMessageBox(window, options)
+    : await dialog.showMessageBox(options);
+  if (result.response === buttons.indexOf('打开数据目录')) {
+    await shell.openPath(USER_DATA);
+  }
+}
+
 module.exports = {
   clearDouyinSiteData,
   clearUserscriptData,
@@ -171,4 +209,5 @@ module.exports = {
   repairUnloadablePage,
   requestStuckDialogRecovery,
   settleStuckDialogRecovery,
+  showAbout,
 };
