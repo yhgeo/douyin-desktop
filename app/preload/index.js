@@ -4,9 +4,13 @@
  * Preload entry: decides what this frame is, then hands off to the two modules that do
  * the actual work.
  *
- * Runs in every frame of every document, so the first thing it does is work out whether
- * the frame is Douyin at all, and whether it is the top frame - the userscript only wants
- * the top one, while the dialog watchdog is happy to help anywhere.
+ * In practice this runs only in the top frame. Electron does not inject preloads into
+ * sub-frames unless `nodeIntegrationInSubFrames` is set, and window.js does not set it -
+ * measured with a page holding one same-origin iframe: one `get-script-enabled` call
+ * without the flag, two with it (and with the flag, the whole userscript also landed in
+ * the iframe). The host and top-frame checks below stay anyway: they are what keeps
+ * turning that flag on from becoming a silent cost, and they are what the code below
+ * relies on to mean anything.
  */
 
 const { ipcRenderer } = require('electron');

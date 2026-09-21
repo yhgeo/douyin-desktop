@@ -61,6 +61,11 @@ function attachResponsivenessHandlers(contents, options = {}) {
         prompting = false;
       }
     }, graceMs);
+    // Same rule as the blank-page watcher: a pending timer must not keep the process
+    // alive on its own. It only matters for the grace period, which is why it is easy
+    // to forget - and it is exactly why the rule is worth stating once and following
+    // everywhere.
+    if (graceTimer.unref) graceTimer.unref();
   };
 
   const onResponsive = () => {

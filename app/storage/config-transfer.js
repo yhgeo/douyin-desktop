@@ -79,7 +79,18 @@ function parseImportPayload(text) {
     return { ok: false, error: '配置内容必须是 JSON 对象' };
   }
 
+  // A wrapper is recognised by this app's marker *and* the format number every export
+  // writes. Matching on `app` + `values` alone misread a bare config that happened to
+  // use those two names as keys: the wrapper's own fields were then treated as the
+  // payload and the real settings were silently dropped. Measured with
+  // `{app:'douyin-desktop', values:{theme:'dark'}, fontSize:16}` - three keys in, one key
+  // imported. A file carrying the marker without a format is reported rather than
+  // guessed at, because guessing wrong loses the user's configuration.
   const isWrapper = parsed.app === APP_ID && isPlainObject(parsed.values);
+  if (isWrapper && typeof parsed.format !== 'number') {
+    return { ok: false, error: '像是本应用的备份文件，但缺少 format 字段，无法确认格式' };
+  }
+
   const values = isWrapper ? parsed.values : parsed;
   if (!isPlainObject(values)) {
     return { ok: false, error: '配置内容必须是 JSON 对象' };

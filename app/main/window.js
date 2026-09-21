@@ -17,6 +17,7 @@ const { attachPageDiagnostics } = require('../diagnostics/page-diagnostics');
 const { attachResponsivenessHandlers } = require('../recovery/responsiveness');
 const { attachBlankPageRecovery } = require('../recovery/blank-page');
 const { titlesFor } = require('./titles');
+const { setRepairStatus } = require('./title-state');
 
 let mainWindow = null;
 
@@ -88,6 +89,9 @@ async function createWindow() {
     onStatus: (status) => {
       const window = getMainWindow();
       if (!window) return;
+      // Recorded as well as displayed: web-contents-guard.js answers every
+      // page-title-updated with the same lookup, so the page cannot wipe the notice.
+      setRepairStatus(window.webContents, status);
       window.setTitle(titlesFor(status));
     },
     onRecovered: (info) => {

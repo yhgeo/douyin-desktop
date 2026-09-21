@@ -10,6 +10,20 @@ const path = require('node:path');
 const LEGACY_VALUES_KEY = 'douyin-desktop:gm-values';
 
 /**
+ * Hold the values on a null-prototype object.
+ *
+ * A plain object literal has `Object.prototype` in its chain, so `values['__proto__'] = x`
+ * invokes the inherited setter and *replaces the prototype* instead of adding a key.
+ * Measured: after `set('__proto__', { injected: 'x' })`, `get('injected')` returned the
+ * value while `has('injected')` said no - and the value never reached the file, because
+ * `JSON.stringify` does not serialise a prototype. A null prototype has no setter to trip,
+ * so `__proto__` becomes an ordinary key like any other.
+ */
+function toValueStore(source) {
+  return Object.assign(Object.create(null), source || {});
+}
+
+/**
  * Persistent store for the userscript's GM_* values.
  *
  * It deliberately lives outside the browser session: keeping it in the page's
@@ -28,7 +42,7 @@ class GmStore {
     /** True once the backing file exists, i.e. the store has been initialised. */
     this.initialized = fs.existsSync(filePath);
     /** @type {Record<string, unknown>} */
-    this.values = this.#read();
+    this.values = toValueStore(this.#read());
   }
 
   #read() {
@@ -97,7 +111,7 @@ class GmStore {
 
   /** Replace the whole store (used by migration and by "clear script data"). */
   replaceAll(next) {
-    this.values = { ...(next || {}) };
+    this.values = toValueStore(next);
     this.#persist();
   }
 
@@ -106,4 +120,4 @@ class GmStore {
   }
 }
 
-module.exports = { GmStore, LEGACY_VALUES_KEY };
+module.exports = { GmStore, LEGACY_VALUES_KEY, toValueStore };

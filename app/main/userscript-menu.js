@@ -36,6 +36,9 @@ function scheduleMenuRebuild() {
       log.error('重建菜单失败', { error: String((error && error.message) || error) });
     }
   }, REBUILD_DEBOUNCE_MS);
+  // Same rule as every other timer the app arms: a pending one must not be the reason
+  // the process stays alive.
+  if (rebuildTimer.unref) rebuildTimer.unref();
 }
 
 function registerCommand(command) {

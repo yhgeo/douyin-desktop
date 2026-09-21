@@ -31,6 +31,15 @@ function evaluateBundled(relativePath) {
  * @returns {boolean} whether the bundle was scheduled (it runs on documentElement)
  */
 function injectUserscript({ isTopFrame }) {
+  // Top frame only. The bundle registers menu commands, drives the player and rewrites
+  // the page's chrome - none of which means anything inside an iframe - and it is four
+  // vendor bundles plus a 15k-line script, so evaluating it per frame is pure cost.
+  //
+  // Today Electron does not run this preload in sub-frames at all (window.js leaves
+  // `nodeIntegrationInSubFrames` off), so this guard changes nothing; it is here so that
+  // switching that option on cannot quietly turn the bundle into a per-iframe expense.
+  if (!isTopFrame) return false;
+
   // The bundle must not be evaluated before the document has a root element:
   // DOMUtils.addStyle dereferences `document.documentElement.childNodes`, which is null
   // during the raw preload phase and would abort the whole userscript.

@@ -11,10 +11,12 @@ const { BrowserWindow, app, session } = require('electron');
 const { APP_NAME, USER_DATA } = require('../platform/constants');
 const log = require('../diagnostics/logger');
 const { hardenWebContents } = require('../platform/web-contents-guard');
+const { downloadBroker } = require('../platform/downloads');
 const { logBlockedRequest, openExternalSafely } = require('../platform/external-links');
 const { registerIpcHandlers } = require('./ipc');
 const { buildMenu } = require('./menu');
 const { createWindow, getMainWindow } = require('./window');
+const { titleFor } = require('./title-state');
 
 /**
  * A plain browser User-Agent.
@@ -56,7 +58,9 @@ function configureWebContents(contents) {
   hardenWebContents(contents, {
     openExternal: openExternalSafely,
     onBlocked: logBlockedRequest,
-    title: APP_NAME,
+    // A function, not a constant: a window under repair must keep showing its repair
+    // notice, and a constant would erase it on the next title update. See title-state.js.
+    title: titleFor,
   });
 }
 
@@ -145,6 +149,12 @@ async function start() {
 
   app.setAppUserModelId('com.yhgeo.douyin');
   session.defaultSession.setUserAgent(browserUserAgent());
+
+  // `will-download` is a Session event - registering it per webContents does nothing,
+  // which is how the custom-scheme download guard came to be missing entirely. One
+  // registration for the session also carries the GM_download plumbing.
+  downloadBroker.attach(session.defaultSession);
+
   log.info('启动', {
     version: app.getVersion(),
     electron: process.versions.electron,

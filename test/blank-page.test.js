@@ -253,6 +253,26 @@ test('withTimeout resolves to the fallback instead of hanging', async () => {
   assert.equal(await withTimeout(Promise.resolve('ok'), 50, 'fallback'), 'ok');
 });
 
+test('withTimeout releases its guard timer as soon as the race is decided', async () => {
+  // The timer has to be *cleared*, not merely left to fire: an armed 30-second timer
+  // keeps the event loop alive, which is why the whole unit run used to sit idle until
+  // the last one expired.
+  //
+  // It must not be `unref`'d, though - that was tried, and it let the test runner's loop
+  // exit while ten tests were still awaiting their answer. The project rule is "unref
+  // anything that only exists to keep watching"; this timer exists to *answer* a caller,
+  // so it has to hold the loop open until it does.
+  const armedTimers = () =>
+    process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+
+  const before = armedTimers();
+  const raced = withTimeout(Promise.resolve('ok'), 60_000, 'fallback');
+  assert.equal(armedTimers(), before + 1, 'the guard timer is armed while the race is pending');
+
+  assert.equal(await raced, 'ok');
+  assert.equal(armedTimers(), before, 'and cleared once the race is decided');
+});
+
 test('a hanging cookie read is skipped, not waited on', async () => {
   const session = {
     cookies: { get: () => new Promise(() => {}), remove: async () => {} },

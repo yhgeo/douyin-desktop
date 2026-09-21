@@ -4,7 +4,6 @@ const { BrowserWindow } = require('electron');
 const {
   classifyUrl,
   isSafeNavigationUrl,
-  isWebUrl,
 } = require('./url-policy');
 
 /**
@@ -21,7 +20,11 @@ const {
  *    main-frame only, which is how an iframe on douyin.com could still send a
  *    `bytedance://` URL to Windows.
  *  - `will-redirect` covers server-side redirects to a custom scheme.
- *  - `will-download` covers `<a download>` pointing at a custom scheme.
+ *
+ * Downloads are deliberately *not* handled here. `will-download` is a Session event,
+ * so registering it on a webContents does nothing at all - the handler is never
+ * called and the custom-scheme download guard was silently absent. It now lives in
+ * platform/downloads.js, on the session, together with the GM_download plumbing.
  *
  * @param {import('electron').WebContents} contents
  * @param {{ openExternal?: (url: string) => void, onBlocked?: (info: object) => void }} [options]
@@ -86,19 +89,17 @@ function hardenWebContents(contents, options = {}) {
   contents.on('will-navigate', onNavigate);
   contents.on('will-redirect', onRedirect);
 
-  // `<a download href="bytedance://...">` would otherwise hand the URL to the OS.
-  const onWillDownload = (event, item) => {
-    const url = item?.getURL?.() ?? '';
-    if (isWebUrl(url)) return;
-    event.preventDefault();
-    report('download-blocked', url);
-  };
-  contents.on('will-download', onWillDownload);
-
   // Keep the window title stable no matter what the page sets.
+  //
+  // The value comes from `options.title`, which may be a function of the webContents:
+  // a window under repair has to keep showing its repair notice, and a constant would
+  // erase it on the first title update (the repair's own reload produces one).
+  const resolveTitle = typeof options.title === 'function'
+    ? options.title
+    : () => options.title || '抖音';
   const onTitleUpdated = (event) => {
     event.preventDefault();
-    BrowserWindow.fromWebContents(contents)?.setTitle(options.title || '抖音');
+    BrowserWindow.fromWebContents(contents)?.setTitle(resolveTitle(contents));
   };
   contents.on('page-title-updated', onTitleUpdated);
 
@@ -106,7 +107,6 @@ function hardenWebContents(contents, options = {}) {
     contents.removeListener('will-frame-navigate', onFrameNavigate);
     contents.removeListener('will-navigate', onNavigate);
     contents.removeListener('will-redirect', onRedirect);
-    contents.removeListener('will-download', onWillDownload);
     contents.removeListener('page-title-updated', onTitleUpdated);
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
   };

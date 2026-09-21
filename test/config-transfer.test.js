@@ -7,6 +7,7 @@ const {
   APP_ID,
   EXPORT_FORMAT,
   buildExportPayload,
+  isPlainObject,
   parseImportPayload,
   suggestFileName,
 } = require('../app/storage/config-transfer');
@@ -77,6 +78,49 @@ test('a wrapper without our app id is treated as plain values, not a wrapper', (
   const result = parseImportPayload(JSON.stringify({ values: { a: 1 } }));
   assert.equal(result.ok, true);
   assert.deepEqual(result.values, { values: { a: 1 } });
+});
+
+test('a bare config whose keys collide with the wrapper names is reported, not half-imported', () => {
+  // Measured before the fix: three keys in, one key imported. The file carried our app
+  // marker *and* a `values` object, so it was read as a wrapper and its own fields became
+  // the payload - `fontSize` was dropped and `theme` was imported under the wrong name.
+  //
+  // A marker without a format number cannot be confirmed either way, and guessing wrong
+  // loses the user's configuration, so it is refused with an explanation instead.
+  const result = parseImportPayload(JSON.stringify({
+    app: APP_ID,
+    values: { theme: 'dark' },
+    fontSize: 16,
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /format/);
+});
+
+test('a wrapper carrying the format number is still read as a wrapper', () => {
+  const text = JSON.stringify({ app: APP_ID, format: EXPORT_FORMAT, values: { theme: 'dark' } });
+  const result = parseImportPayload(text);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.values, { theme: 'dark' });
+});
+
+test('a bare config that happens to use the name `app` is still plain values', () => {
+  // `app` alone is not a marker: the app id has to match as well.
+  const result = parseImportPayload(JSON.stringify({ app: 'something-else', values: { a: 1 } }));
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.values, { app: 'something-else', values: { a: 1 } });
+});
+
+test('isPlainObject accepts objects and rejects everything else', () => {
+  // Used by the IPC layer to validate a payload arriving from the renderer.
+  assert.equal(isPlainObject({}), true);
+  assert.equal(isPlainObject({ a: 1 }), true);
+  assert.equal(isPlainObject(Object.create(null)), true);
+  assert.equal(isPlainObject([]), false);
+  assert.equal(isPlainObject(null), false);
+  assert.equal(isPlainObject(undefined), false);
+  assert.equal(isPlainObject('{"a":1}'), false);
+  assert.equal(isPlainObject(1), false);
+  assert.equal(isPlainObject(true), false);
 });
 
 test('suggestFileName is filesystem-safe and timestamped', () => {

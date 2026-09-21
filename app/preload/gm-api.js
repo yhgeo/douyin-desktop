@@ -25,6 +25,12 @@ function installGmApi({ frameId, isTopFrame }) {
   const menuCommands = new Map();
   let listenerId = 0;
   let menuCommandId = 0;
+  let downloadId = 0;
+  let httpRequestId = 0;
+  /** requestId -> the caller's callback bag, until its download finishes. */
+  const downloadRequests = new Map();
+  /** requestId -> { aborted } for in-flight GM_xmlhttpRequest calls. */
+  const httpRequests = new Map();
   /** In-memory mirror of the main-process store; GM_getValue must be synchronous. */
   let valuesCache = null;
 
@@ -115,13 +121,30 @@ function installGmApi({ frameId, isTopFrame }) {
 
   function gmGetResourceText() { return undefined; }
 
+  /**
+   * `GM_xmlhttpRequest`, proxied through the main process so the request is not subject
+   * to the page's CORS rules - which is the point of the API.
+   *
+   * Returns a handle whose `abort()` really cancels: the request lives in the main
+   * process, so the renderer cannot stop it alone and has to ask. It used to return a
+   * no-op, which meant a caller that gave up still left the request running.
+   */
   function gmXmlhttpRequest(details = {}) {
+    const requestId = `gm-http-${++httpRequestId}`;
+    const state = { aborted: false };
+    httpRequests.set(requestId, state);
+
+    const finish = () => { httpRequests.delete(requestId); };
+
     ipcRenderer.invoke('gm-http-request', {
+      requestId,
       url: details.url,
       method: details.method || 'GET',
       headers: details.headers || {},
       body: details.data || details.body,
     }).then((result) => {
+      if (state.aborted) return;
+      finish();
       if (!result.ok) {
         details.onerror?.({ error: result.error });
         return;
@@ -132,17 +155,48 @@ function installGmApi({ frameId, isTopFrame }) {
         responseText: result.responseText,
         response: result.response,
         responseHeaders: result.headers,
-        finalUrl: details.url,
+        // After a redirect this is the URL that actually answered, not the one asked for.
+        finalUrl: result.finalUrl || details.url,
       });
-    }).catch((error) => details.onerror?.({ error: error.message || String(error) }));
-    return { abort() {} };
+    }).catch((error) => {
+      if (state.aborted) return;
+      finish();
+      details.onerror?.({ error: error.message || String(error) });
+    });
+
+    return {
+      abort() {
+        state.aborted = true;
+        finish();
+        ipcRenderer.send('gm-http-abort', { requestId });
+      },
+    };
   }
 
+  /**
+   * `GM_download`.
+   *
+   * Returns a handle immediately and reports through the caller's callbacks as the
+   * download actually progresses. The userscript builds its whole download UI on those
+   * callbacks - a progress percentage, a failure message, and `abort()` when the user
+   * closes the progress toast - so calling `onload()` up front made it announce
+   * "下载已完成" before anything had been transferred, and left the toast unable to
+   * cancel anything.
+   */
   function gmDownload(details, nameOrOptions) {
     const options = typeof details === 'string' ? { url: details, name: nameOrOptions } : details;
-    if (!options?.url) return;
-    ipcRenderer.send('gm-download', { url: options.url, name: options.name });
-    options.onload?.();
+    if (!options?.url) return undefined;
+
+    const requestId = `gm-download-${++downloadId}`;
+    downloadRequests.set(requestId, options);
+    ipcRenderer.send('gm-download', { url: options.url, name: options.name, requestId });
+
+    return {
+      abort() {
+        downloadRequests.delete(requestId);
+        ipcRenderer.send('gm-download-abort', { requestId });
+      },
+    };
   }
 
   // Keep every frame's mirror in sync, so a value changed in one frame (or window) is
@@ -159,6 +213,23 @@ function installGmApi({ frameId, isTopFrame }) {
 
   ipcRenderer.on('gm-store-replaced', (_event, next) => {
     valuesCache = next && typeof next === 'object' ? next : {};
+  });
+
+  // Download lifecycle, reported by the main process as it actually happens.
+  ipcRenderer.on('gm-download-progress', (_event, payload) => {
+    if (!payload || typeof payload.requestId !== 'string') return;
+    const options = downloadRequests.get(payload.requestId);
+    options?.onprogress?.({ loaded: payload.loaded, total: payload.total });
+  });
+
+  ipcRenderer.on('gm-download-done', (_event, payload) => {
+    if (!payload || typeof payload.requestId !== 'string') return;
+    const options = downloadRequests.get(payload.requestId);
+    downloadRequests.delete(payload.requestId);
+    if (!options) return;
+    if (payload.state === 'completed') options.onload?.();
+    else if (payload.state === 'cancelled') options.onerror?.({ error: '已取消' });
+    else options.onerror?.({ error: payload.state || '下载失败' });
   });
 
   ipcRenderer.on('invoke-gm-menu-command', (_event, id) => {

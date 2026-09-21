@@ -104,12 +104,25 @@ const REAL_PAGE_SCRIPTS = 5;
 const COOKIE_TIMEOUT_MS = 2000;
 const STEP_TIMEOUT_MS = 8000;
 
-/** Resolve to `onTimeout` instead of hanging. */
+/**
+ * Resolve to `onTimeout` instead of hanging.
+ *
+ * The timer is cleared when the race settles - that is the fix. It used to survive it,
+ * so a successful repair still left an armed 8s handle behind: one per round, plus one
+ * per `__ac_*` cookie inside a round.
+ *
+ * It is deliberately *not* unref'd, unlike the ladder's own timers. Those reschedule
+ * themselves and would keep a process alive forever, which is why they unref. This one
+ * is bounded and exists to guarantee the caller gets an answer at all - unref'ing it
+ * would let a process with nothing else pending exit while the caller is still waiting
+ * (observable: it made ten unit tests get cancelled instead of running).
+ */
 function withTimeout(promise, ms, onTimeout) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => { setTimeout(() => resolve(onTimeout), ms); }),
-  ]);
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
