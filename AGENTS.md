@@ -261,6 +261,43 @@ Electron 的 preload 在**文档创建之前**执行，那时 `document.document
 > 要改的话，`uninstaller.nsh:156` 的 `customUnInstall` 宏在删除**之前**执行，可以在那里把 `data`
 > 挪出去；没有这么做，是因为写一段无法在本机验证的 NSIS 脚本，风险高于它解决的问题。
 
+### 全屏模糊：脚本的 `:has` 选择器命中了播放器层（0.2.5 修）
+
+症状：开启「屏蔽 搜索悬浮栏」或「屏蔽 网页全屏关闭按钮」后，推荐页**第三个视频起**在全屏下变模糊。
+
+**为什么是模糊**：抖音播放器自己画一层毛玻璃背景（`div.imgBackground`，里面的 `img` 带
+`filter: blur(60px)`、`opacity: .8`）。它和播放器层是**兄弟节点**：
+
+```
+div.slider-video
+  └─ div.basePlayerContainer
+       ├─ div.imgBackground        ← 模糊背景图
+       └─ div.douyin-player        ← <video> 在这里；关闭按钮也在它里面
+```
+
+**根因**：脚本用 `.playerContainer .slider-video > div > div:has(path[d="…"])` 屏蔽关闭按钮。
+`:has()` 匹配的是**任意包含该图标的祖先**，而 `> div > div` 这个深度约束恰好把匹配钉在
+`div.douyin-player` 上 —— 于是 `display:none` 落在装着 `<video>` 的层，只剩 `imgBackground`
+可见，观感就是"超级模糊"。搜索栏开关同理：那个按钮也在 `div.douyin-player` 内部。
+
+实测（`tools/inspect/fullscreen-blur-probe.js`，连真页面）：坏选择器命中 1 个元素、**其中 1 个含 video**；
+改成 `div:has(>svg path[…])`（不带深度约束）命中 1 个、**0 个含 video**（命中的是图标自己的容器
+`div.kKuuOoS7g`）。
+
+**修在程序里，不在脚本里。** 脚本是要跟着上游更新的依赖，改它的选择器等于每次更新都要重新打补丁，
+忘了就静默退回 bug。所以由壳在样式生效时**移除那条规则**（`preload/video-visibility-guard.js`）——
+移除规则也让站点自己的样式自然生效；覆盖 `display` 则要猜它原本该是什么，猜错就是另一种坏法。
+
+守卫的判定刻意窄，三条同时成立才动手：① 规则是 `display: none`；② 选择器在 `.slider-video` 内用
+`:has(` 做后代匹配（能落到祖先上的形状）；③ **它此刻真的在藏一个含 `<video>` 的元素**。
+站点自己的 CSS 不会用 `:has()` 去藏播放器，所以合法隐藏不会三条全中；而每条被移除的选择器都会
+写进日志（页面控制台的 warn 会被 `page-diagnostics` 收进运行日志），可见而不是靠猜。
+
+`test/video-visibility-guard.test.js` 直接从 bundle 里取真实选择器来验证判定 —— 上游再加一个同形状的
+选择器，这个测试会失败，而不是让守卫悄悄漏掉。DOM 集成（真 `<style>`、真 `cssRules`、真
+MutationObserver）用 `tools/inspect/video-visibility-guard-probe.js` 在真实渲染器里验证：合成一个
+同样的结构 + 同样的规则，断言规则被移除、元素恢复可见。
+
 ### 单实例锁
 
 单实例锁按 **profile** 生效（Electron 把锁放在 `userData` 里），所以上表里**不同**运行方式可以同时开，
@@ -508,6 +545,11 @@ npm run test:all  # 全部
 单元测试跑在 `node --test` 下，**不需要 Electron** —— 所以纯逻辑尽量挪进不依赖 `electron` 的模块
 （`main/titles.js`、`platform/script-meta.js` 就是这么来的）。
 
+**刻意串行**（`--test-concurrency=1`）。并行时 Node 测试运行器的进程间协议会偶发
+`Unable to deserialize cloned data due to invalid or unsupported version`，表现为某个测试文件整体失败、
+连测试条数都对不上（142 vs 146），而单独跑那个文件是全过的。串行后连跑 3 次 146/146 全绿。
+这是运行器的环境问题，不是被测代码的问题 —— 但一个偶发红的 `npm test` 会让所有人开始忽略它。
+
 剩下几个模块（`platform/downloads.js`、`web-contents-guard.js`）的行为本身就长在 Electron 对象上，
 拆不干净，于是用 `test/helpers/electron-stub.js` 在 `require` 之前把 `electron` 换掉。原因很具体：
 Electron 之外 `require('electron')` 返回的是**二进制路径字符串**，`const { app } = require('electron')`
@@ -519,6 +561,7 @@ Electron 之外 `require('electron')` 返回的是**二进制路径字符串**�
 | `titles` / `title-state` | 窗口标题的文案，以及"页面改标题不能冲掉修复提示" |
 | `profile-dir` | 数据目录规则，以及搬家时复制什么、跳过什么 |
 | `loading-document` | 加载页与导航白名单、空文档判定的交叉约束 |
+| `video-visibility-guard` | 判定哪些注入样式会藏住视频；选择器直接从 bundle 里取 |
 | `url-policy` | 协议与域名判定（含仿冒域名） |
 | `config-transfer` / `config-backup` / `gm-store` | 备份格式、导入校验、键与原型安全 |
 | `blank-page` | 空文档与验证码判定、阶梯动作、时限与定时器回收 |

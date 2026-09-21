@@ -62,6 +62,8 @@ node tools/inspect/black-screen-probe.js --port=9222
 | 脚本 | 用途 |
 | --- | --- |
 | `player-probe.js` | 全屏前后的播放器指标：内部分辨率 vs 显示尺寸、`devicePixelRatio`、CSS transform。`--page` 驱动"网页全屏"，`--url=` 直连视频页 |
+| `fullscreen-blur-probe.js` | 全屏模糊归因：两个屏蔽开关的选择器**实际命中哪些元素**、其中几个含 `<video>`、谁在画模糊层、以及候选修复选择器的命中情况。`--steps=N` 决定滑几个视频 |
+| `video-visibility-guard-probe.js` | 在真实渲染器里验证 `preload/video-visibility-guard.js`：合成同样的结构与规则，断言规则被移除、元素恢复可见。不需要登录 |
 
 ## 环境对照：是我们的壳还是环境？
 

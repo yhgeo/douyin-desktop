@@ -18,6 +18,7 @@ const { whenDocumentElementAvailable } = require('../platform/dom-ready');
 const { installStuckDialogWatch, recoverStuckDialog } = require('../recovery/stuck-dialog');
 const { installGmApi } = require('./gm-api');
 const { injectUserscript } = require('./inject');
+const { installVideoVisibilityGuard } = require('./video-visibility-guard');
 
 const isDouyin = /(^|\.)douyin\.com$|(^|\.)iesdouyin\.com$/i.test(location.hostname);
 const isTopFrame = window.top === window;
@@ -55,5 +56,9 @@ if (isTopFrame && isDouyin) {
 if (scriptEnabled) {
   if (isTopFrame) ipcRenderer.send('gm-menu-reset');
   installGmApi({ frameId, isTopFrame });
+  // Installed only alongside the script: its whole job is to neutralise the script's CSS, and
+  // the shell does not otherwise touch the page's stylesheets. See the module for the
+  // measurement behind it.
+  installVideoVisibilityGuard();
   injectUserscript({ isTopFrame });
 }
