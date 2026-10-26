@@ -204,6 +204,27 @@ function buildMenu() {
     },
     { label: SCRIPT_NAME, submenu: buildScriptSubmenu() },
     {
+      label: '体验增强',
+      submenu: [
+        {
+          label: '启用网页抖音体验增强（5.7）',
+          type: 'checkbox',
+          checked: readSettings().experienceEnhancerEnabled === true,
+          click: (item) => {
+            if (!writeSettings({ ...readSettings(), experienceEnhancerEnabled: item.checked })) {
+              item.checked = !item.checked;
+              return;
+            }
+            getMainWindow()?.webContents.reload();
+          },
+        },
+        { label: '启用后在视频工具栏调整功能与设置', enabled: false },
+        { label: '含跳过直播、关键词屏蔽、画质选择；同类功能请只开一套', enabled: false },
+        { type: 'separator' },
+        { label: '脚本主页与更新说明', click: () => openExternalSafely('https://greasyfork.org/zh-CN/scripts/539942') },
+      ],
+    },
+    {
       label: '视图',
       submenu: [
         { label: '放大', accelerator: 'CmdOrCtrl+Plus', role: 'zoomIn' },

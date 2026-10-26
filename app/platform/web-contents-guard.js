@@ -1,6 +1,7 @@
 'use strict';
 
 const { BrowserWindow } = require('electron');
+const path = require('node:path');
 const {
   classifyUrl,
   isSafeNavigationUrl,
@@ -50,6 +51,27 @@ function hardenWebContents(contents, options = {}) {
       // allowed, exactly as before, and the new window is hardened too because
       // `web-contents-created` applies this same policy to it.
       report('popup-allowed', url);
+      const target = new URL(url);
+      const isLiveRoom = (target.hostname === 'live.douyin.com' && /^\/\d+\/?$/.test(target.pathname))
+        || (target.hostname === 'www.douyin.com' && /^\/(?:root|follow)\/live(?:\/|$)/.test(target.pathname));
+      if (isLiveRoom) {
+        // Electron does not inherit the opener's preload. Sidebar live cards use
+        // window.open, unlike recommendation rooms that navigate the main window.
+        // Apply the same limited page bridge only to live-room windows; login and
+        // verification helper windows retain their normal isolated preferences.
+        // A room opened from a search result is a browsing window in its own
+        // right. Closing the results must not destroy its live stream.
+        return { action: 'allow', outlivesOpener: true, overrideBrowserWindowOptions: {
+          webPreferences: {
+            preload: path.join(__dirname, '..', 'preload', 'index.js'),
+            nodeIntegration: false,
+            contextIsolation: false,
+            sandbox: false,
+            webviewTag: false,
+            backgroundThrottling: false,
+          },
+        } };
+      }
       return { action: 'allow' };
     }
 
@@ -65,6 +87,21 @@ function hardenWebContents(contents, options = {}) {
     report('popup-blocked', url);
     return { action: 'deny' };
   });
+
+  // The live-home renderer's initial popup navigation can return empty audience
+  // API responses in a signed-in session. A fresh navigation to the very same
+  // room succeeds. Start it immediately after Electron dispatches the initial
+  // navigation, keeping native window.open ownership and preferences.
+  const onCreatedWindow = (child, details) => {
+    const url = canonicalLivePopupUrl(details.url, contents.getURL());
+    if (url) setImmediate(() => {
+      if (child.isDestroyed()) return;
+      child.loadURL(url).catch(() => {
+        // Closing the child cancels an in-flight load normally.
+      });
+    });
+  };
+  contents.on('did-create-window', onCreatedWindow);
 
   const blockUnsafeNavigation = (event, rawUrl, isMainFrame) => {
     if (isSafeNavigationUrl(rawUrl)) return;
@@ -108,8 +145,21 @@ function hardenWebContents(contents, options = {}) {
     contents.removeListener('will-navigate', onNavigate);
     contents.removeListener('will-redirect', onRedirect);
     contents.removeListener('page-title-updated', onTitleUpdated);
+    contents.removeListener('did-create-window', onCreatedWindow);
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
   };
 }
 
-module.exports = { hardenWebContents };
+function canonicalLivePopupUrl(rawUrl, openerUrl) {
+  try {
+    const target = new URL(rawUrl);
+    const opener = new URL(openerUrl);
+    if (opener.protocol === 'https:' && opener.hostname === 'live.douyin.com' && opener.pathname === '/'
+        && target.protocol === 'https:' && target.hostname === 'live.douyin.com' && /^\/\d+\/?$/.test(target.pathname)) {
+      return target.origin + target.pathname;
+    }
+  } catch { /* No committed or supported URL. */ }
+  return null;
+}
+
+module.exports = { hardenWebContents, canonicalLivePopupUrl };

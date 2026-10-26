@@ -12027,57 +12027,7 @@
       ];
     },
     async showRoomUserCount() {
-      log.info(`显示直播间具体人数`);
-      const $audience = await domUtils.waitNode('[data-e2e="live-room-audience"]', 1e4);
-      if (!$audience) {
-        log.error("未找到观众人数元素");
-        return;
-      }
-      if (!$audience.closest('[data-e2e="living-container"]')) {
-        log.error("未找到直播间容器");
-        return;
-      }
-      const react = utils$1.getReactInstance($audience)?.reactFiber;
-      if (!react) {
-        log.error("未找到react实例");
-        return;
-      }
-      const lockFn = new utils$1.LockFunction(async () => {
-        const display_value = utils$1.queryProperty(react, (target) => {
-          const __display_value__ =
-            target?.memoizedProps?.value?.store?.roomStore?.roomInfo?.room?.room_view_stats?.display_value;
-          if (typeof __display_value__ === "number")
-            return {
-              isFind: true,
-              data: __display_value__,
-            };
-          else
-            return {
-              isFind: false,
-              data: target?.return,
-            };
-        });
-        if (typeof display_value === "number") {
-          domUtils.text($audience, display_value);
-          log.info(`更新人数：${display_value}`);
-          await utils$1.sleep(500);
-        }
-      });
-      const observer = utils$1.mutationObserver(document.body, {
-        config: {
-          subtree: true,
-          childList: true,
-        },
-        immediate: true,
-        callback: () => {
-          lockFn.run();
-        },
-      });
-      return [
-        () => {
-          observer.disconnect();
-        },
-      ];
+      return window.__douyinDesktopStartLiveAudience();
     },
   };
   var block_default$7 =

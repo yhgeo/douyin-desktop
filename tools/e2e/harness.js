@@ -128,6 +128,8 @@ function installPreloadIpc(options = {}) {
   };
 
   ipcMain.on('get-script-enabled', (event) => { event.returnValue = options.scriptEnabled !== false; });
+  ipcMain.on('get-experience-enhancer-enabled', (event) => { event.returnValue = options.experienceEnhancerEnabled === true; });
+  ipcMain.on('get-player-probe', (event) => { event.returnValue = false; });
   ipcMain.on('gm-menu-reset', () => {});
   ipcMain.on('gm-menu-register', (_event, command) => { received.menuCommands.push(command); });
   ipcMain.on('gm-menu-unregister', () => {});

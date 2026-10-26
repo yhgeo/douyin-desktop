@@ -14,7 +14,7 @@ const path = require('node:path');
 const { SETTINGS_PATH } = require('../platform/constants');
 const log = require('../diagnostics/logger');
 
-const DEFAULTS = { scriptEnabled: true, playerProbe: false };
+const DEFAULTS = { scriptEnabled: true, playerProbe: false, experienceEnhancerEnabled: false };
 
 function readSettings() {
   try {

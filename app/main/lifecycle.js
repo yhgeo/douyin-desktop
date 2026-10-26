@@ -152,6 +152,11 @@ function registerAppEvents(ownsProfile) {
 /** Command line switches that must be set before Chromium reads them. */
 function applyCommandLineSwitches() {
   app.setName(APP_NAME);
+  // Session UA alone does not cover Chromium-created popup webContents. Those
+  // otherwise expose the default Chinese product/Electron UA to the page, which
+  // then sends browser_name=Electron in signed audience requests. Set the app
+  // fallback before creating any window so navigator and requests agree.
+  app.userAgentFallback = browserUserAgent();
   app.commandLine.appendSwitch('lang', 'zh-CN');
 
   // Chromium throttles timers and requestAnimationFrame for windows it considers occluded

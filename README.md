@@ -139,3 +139,6 @@ Chromium 的 GPU 子进程启动失败，与应用逻辑无关。重启机器一
 内置脚本来自 `WhiteSevs/TamperMonkeyScript`，标注为 **GPL-3.0-only**。
 脚本源码在 `assets/douyin-optimization.user.js`，依赖的 UMD 文件在 `vendor/`。
 更新脚本前请阅读并遵循上游项目的许可与发布要求。
+
+可选的「体验增强」脚本是 Frequenk 的[网页抖音体验增强](https://greasyfork.org/zh-CN/scripts/539942) 5.7（标注 GPL-3.0），
+源码在 `assets/douyin-experience-enhancer.user.js`，相对原版只做了两处桌面版适配（工具栏开关跨刷新保留、倍速菜单悬停层级）。默认关闭，在菜单「体验增强」里开启。

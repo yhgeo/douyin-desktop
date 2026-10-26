@@ -17,7 +17,7 @@ const { ipcRenderer } = require('electron');
 const { whenDocumentElementAvailable } = require('../platform/dom-ready');
 const { installStuckDialogWatch, recoverStuckDialog } = require('../recovery/stuck-dialog');
 const { installGmApi } = require('./gm-api');
-const { injectUserscript } = require('./inject');
+const { injectUserscript, injectExperienceEnhancer } = require('./inject');
 const { installVideoVisibilityGuard } = require('./video-visibility-guard');
 const { installStyleCostGuard } = require('./style-cost-guard');
 const { installPlayerProbe } = require('../diagnostics/player-probe');
@@ -102,4 +102,8 @@ if (isTopFrame && isDouyin) {
 
   ipcRenderer.on('player-probe-set', (_event, enabled) => (enabled ? start() : stop()));
   if (ipcRenderer.sendSync('get-player-probe') === true) start();
+}
+
+if (isDouyin && isTopFrame && ipcRenderer.sendSync('get-experience-enhancer-enabled') === true) {
+  injectExperienceEnhancer({ isTopFrame, hostname: location.hostname });
 }

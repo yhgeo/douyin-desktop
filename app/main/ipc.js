@@ -54,6 +54,9 @@ function registerIpcHandlers() {
   ipcMain.on('get-script-enabled', (event) => {
     event.returnValue = readSettings().scriptEnabled;
   });
+  ipcMain.on('get-experience-enhancer-enabled', (event) => {
+    event.returnValue = senderIsDouyin(event) && readSettings().experienceEnhancerEnabled === true;
+  });
 
   // --- the player diagnostic recorder (tools menu) ---------------------------
   //
@@ -71,13 +74,22 @@ function registerIpcHandlers() {
   });
 
   // --- the userscript's own menu entries ------------------------------------
-  ipcMain.on('gm-menu-reset', () => {
+  ipcMain.on('gm-menu-reset', (event) => {
+    // Native menu commands are dispatched to the main window. A live popup now
+    // has its own preload, but must not replace that window's command registry.
+    if (event.sender !== getMainWindow()?.webContents) return;
     clearCommands();
     scheduleMenuRebuild();
   });
-  ipcMain.on('gm-menu-register', (_event, command) => registerCommand(command));
-  ipcMain.on('gm-menu-unregister', (_event, id) => unregisterCommand(id));
-  ipcMain.on('userscript-loaded', (_event, state) => setLoadState(state));
+  ipcMain.on('gm-menu-register', (event, command) => {
+    if (event.sender === getMainWindow()?.webContents) registerCommand(command);
+  });
+  ipcMain.on('gm-menu-unregister', (event, id) => {
+    if (event.sender === getMainWindow()?.webContents) unregisterCommand(id);
+  });
+  ipcMain.on('userscript-loaded', (event, state) => {
+    if (event.sender === getMainWindow()?.webContents) setLoadState(state);
+  });
 
   // --- recovery results ------------------------------------------------------
   ipcMain.on('stuck-dialog-recovered', (_event, info) => {

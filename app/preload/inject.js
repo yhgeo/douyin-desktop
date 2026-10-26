@@ -12,10 +12,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { ipcRenderer } = require('electron');
 const { whenDocumentElementAvailable } = require('../platform/dom-ready');
+const { installLiveAudience } = require('./live-audience');
 
 /** `@require` order matters: the userscript reads these as globals at load time. */
 const VENDOR_BUNDLES = ['domutils.umd.js', 'pops.umd.js', 'utils.umd.js', 'qmsg.umd.js'];
 const USERSCRIPT = path.join('assets', 'douyin-optimization.user.js');
+const EXPERIENCE_ENHANCER = path.join('assets', 'douyin-experience-enhancer.user.js');
 
 /** Repository root - `app/preload/` is two levels down. */
 const APP_ROOT = path.join(__dirname, '..', '..');
@@ -46,6 +48,7 @@ function injectUserscript({ isTopFrame }) {
   whenDocumentElementAvailable(() => {
     try {
       VENDOR_BUNDLES.forEach((file) => evaluateBundled(path.join('vendor', file)));
+      window.__douyinDesktopStartLiveAudience = () => installLiveAudience();
       evaluateBundled(USERSCRIPT);
       if (isTopFrame) ipcRenderer.send('userscript-loaded', { ok: true });
     } catch (error) {
@@ -56,4 +59,22 @@ function injectUserscript({ isTopFrame }) {
   return true;
 }
 
-module.exports = { USERSCRIPT, VENDOR_BUNDLES, injectUserscript };
+function injectExperienceEnhancer({ isTopFrame, hostname }) {
+  // Match the upstream exclusions; unlike the original bundle, this script appends
+  // to document.head immediately and must wait until the document is parsed.
+  if (!isTopFrame || !/(^|\.)douyin\.com$|(^|\.)iesdouyin\.com$/i.test(hostname)
+      || hostname.toLowerCase() === 'lf-zt.douyin.com') return false;
+  const run = () => {
+    try {
+      evaluateBundled(EXPERIENCE_ENHANCER);
+      console.info('[抖音] 网页抖音体验增强 5.7 已加载');
+    } catch (error) {
+      console.error('[抖音] 网页抖音体验增强加载失败', error);
+    }
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run, { once: true });
+  else run();
+  return true;
+}
+
+module.exports = { USERSCRIPT, EXPERIENCE_ENHANCER, VENDOR_BUNDLES, injectUserscript, injectExperienceEnhancer };
